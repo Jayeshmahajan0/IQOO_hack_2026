@@ -1,9 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const learningStore = require('./learningStore');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:1b';
 
 app.use(cors());
 app.use(express.json());
@@ -14,235 +17,214 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
+/**
+ * Health Check Endpoint - Node.js + Ollama Status
+ */
+app.get('/api/health', async (req, res) => {
+  let ollamaStatus = 'offline';
+  let availableModels = [];
+
+  try {
+    const ollamaRes = await fetch(`${OLLAMA_URL}/api/tags`);
+    if (ollamaRes.ok) {
+      const data = await ollamaRes.json();
+      ollamaStatus = 'online';
+      availableModels = (data.models || []).map(m => m.name);
+    }
+  } catch (err) {
+    ollamaStatus = 'offline (will use fast embedded AI router)';
+  }
+
   res.json({
     status: 'online',
-    service: 'ContextFlow AI Engine (Node.js)',
+    service: 'ContextFlow Autonomous Agent Server',
+    ollama: {
+      status: ollamaStatus,
+      targetModel: OLLAMA_MODEL,
+      availableModels
+    },
     timestamp: new Date().toISOString()
   });
 });
 
 /**
- * Main Intent Processing Endpoint
- * Request payload:
- * {
- *   speechText: string,
- *   clipboardContext?: string,
- *   appContext?: { appName?: string, selectedText?: string }
- * }
+ * Helper: Query local Ollama llama3.2:1b model
  */
-app.post('/api/process-intent', (req, res) => {
+async function queryOllama(promptText, systemPrompt) {
   try {
-    const { speechText, clipboardContext, appContext } = req.body;
+    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt: `${systemPrompt}\n\nUser Input: ${promptText}\nResponse:`,
+        stream: false,
+      }),
+    });
 
-    if (!speechText || typeof speechText !== 'string') {
-      return res.status(400).json({
-        error: 'Invalid request',
-        message: 'speechText is required and must be a string.'
-      });
-    }
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.response;
+  } catch (err) {
+    console.log(`[Ollama Query Note]: ${err.message}. Using built-in reasoning engine.`);
+    return null;
+  }
+}
 
-    const textLower = speechText.trim().toLowerCase();
-    let resultIntent = {
-      intent: 'unknown',
-      confidence: 0.85,
-      requiresConfirmation: false,
-      entities: {},
-      actionPayload: null,
-      summary: ''
+/**
+ * Main Autonomous Life Assistant Endpoint
+ * Flow: Intent -> Context -> Action
+ */
+app.post('/api/life-assistant', async (req, res) => {
+  try {
+    const { userPrompt, customContext } = req.body;
+    const promptText = userPrompt || "I'm getting late for college";
+
+    // 1. Gather fused multi-modal context & learned rules
+    const context = {
+      ...learningStore.getCurrentContext(),
+      ...customContext
     };
+    const learnedRules = learningStore.getLearnedRules();
 
-    const hasClipboard = clipboardContext && clipboardContext.trim().length > 0;
-    const clipText = hasClipboard ? clipboardContext.trim() : '';
+    const textLower = promptText.toLowerCase();
 
-    // 1. REWRITE / SHORTEN / FORMAL INTENT
-    if (
-      textLower.includes('make this shorter') ||
-      textLower.includes('shorten') ||
-      textLower.includes('summarize this') ||
-      textLower.includes('make it formal') ||
-      textLower.includes('rewrite') ||
-      textLower.includes('fix grammar')
-    ) {
-      let operation = 'rewrite';
-      let modifiedText = clipText;
+    // 2. Query Ollama local llama3.2:1b model for reasoning
+    const systemPrompt = `You are ContextFlow, an autonomous life-operating AI agent. 
+Analyze the user request combined with user context:
+Location: ${context.location}
+Calendar: ${context.calendar.event} at ${context.calendar.startTime} (${context.calendar.timeUntilEvent})
+Traffic: ${context.traffic.metroStatus} vs ${context.traffic.cabStatus}
+Learned Rules: ${learnedRules.map(r => r.rule).join('; ')}
 
-      if (textLower.includes('shorter') || textLower.includes('shorten') || textLower.includes('summarize')) {
-        operation = 'shorten';
-        modifiedText = clipText ? clipText.split('. ').slice(0, 2).join('. ') : speechText;
-        if (!modifiedText.endsWith('.')) modifiedText += '...';
-      } else if (textLower.includes('formal') || textLower.includes('professional')) {
-        operation = 'make_formal';
-        modifiedText = clipText
-          ? `Dear Team, I am writing to inform you regarding: "${clipText}". Please let me know your thoughts. Best regards.`
-          : `Dear Sir/Madam, ${speechText}`;
-      } else if (textLower.includes('fix grammar') || textLower.includes('correct')) {
-        operation = 'fix_grammar';
-        modifiedText = clipText ? clipText.charAt(0).toUpperCase() + clipText.slice(1) : speechText;
-      }
+Provide a concise, direct, helpful analysis and recommendation.`;
 
-      resultIntent = {
-        intent: 'rewrite',
-        confidence: 0.95,
-        requiresConfirmation: false,
-        entities: {
-          operation,
-          sourceContext: hasClipboard ? 'clipboard' : 'speech',
-          originalContent: clipText || speechText,
-          processedContent: modifiedText
+    const rawOllamaOutput = await queryOllama(promptText, systemPrompt);
+
+    // 3. Construct structured actionable decision object
+    let agentResult = null;
+
+    if (textLower.includes('college') || textLower.includes('late') || textLower.includes('commute') || textLower.includes('class')) {
+      agentResult = {
+        intent: 'OPTIMIZE_COMMUTE_LATE',
+        reasoning: rawOllamaOutput || `Your ${context.calendar.event} starts at ${context.calendar.startTime}. Metro is delayed by 20 minutes due to line congestion. A cab is 11 minutes faster and will ensure you arrive on time.`,
+        action: {
+          id: 'action_book_cab',
+          type: 'BOOK_CAB',
+          title: '🚕 Book Cab (11 mins faster)',
+          description: `Estimated Fare: ₹180 • ETA: 17 mins • Time saved: 11 mins`,
+          payload: {
+            destination: context.calendar.location,
+            pickup: context.location,
+            fare: '₹180',
+            timeSaved: '11 mins'
+          }
         },
-        actionPayload: {
-          type: 'COPY_TO_CLIPBOARD',
-          content: modifiedText
+        alternativeAction: {
+          id: 'action_take_metro',
+          type: 'TAKE_METRO',
+          title: '🚇 Take Metro Anyway',
+          description: `Expected arrival: 10:15 AM (15 mins late)`
         },
-        summary: `Rewrote context as (${operation}): "${modifiedText}"`
+        responsibleAgentNote: 'Checked calendar & live transit state. Cab booking requires your single-tap confirmation.',
+        contextUsed: ['Current Location', 'Google Calendar', 'Metro Traffic Alert', 'Learned Preferences']
       };
-    }
-    // 2. PREPARE MESSAGE INTENT
-    else if (
-      textLower.includes('tell') ||
-      textLower.includes('message') ||
-      textLower.includes('send to') ||
-      textLower.includes('text')
-    ) {
-      let recipient = 'Contact';
-      const tellMatch = speechText.match(/(?:tell|message|send to|text)\s+([A-Z][a-z]+|[a-z]+)/i);
-      if (tellMatch && tellMatch[1]) {
-        recipient = tellMatch[1].charAt(0).toUpperCase() + tellMatch[1].slice(1);
-      }
-
-      let messageBody = speechText.replace(/(?:tell|message|send to|text)\s+([A-Z][a-z]+|[a-z]+)/i, '').trim();
-      if (!messageBody && hasClipboard) {
-        messageBody = clipText;
-      }
-
-      resultIntent = {
-        intent: 'prepare_message',
-        confidence: 0.92,
-        requiresConfirmation: true,
-        entities: {
-          recipient,
-          messageBody: messageBody || 'Hey, checking in!'
+    } else if (textLower.includes('message') || textLower.includes('text') || textLower.includes('tell')) {
+      agentResult = {
+        intent: 'PREPARE_RESPONSIBLE_MESSAGE',
+        reasoning: rawOllamaOutput || `Detected upcoming lecture at ${context.calendar.startTime}. Pre-drafted a polite notification message to your study group.`,
+        action: {
+          id: 'action_send_message',
+          type: 'SEND_MESSAGE',
+          title: '💬 Send Status Update',
+          description: `To: Class Group • "Hey, heading to Campus Hall B now, reach in 15m."`,
+          payload: {
+            recipient: 'Class Group',
+            body: 'Hey, heading to Campus Hall B now, reach in 15m.'
+          }
         },
-        actionPayload: {
-          type: 'OPEN_MESSAGING_APP',
-          recipient,
-          body: messageBody || 'Hey, checking in!'
-        },
-        summary: `Prepared draft for ${recipient}: "${messageBody}"`
+        responsibleAgentNote: 'Pre-filled message draft. Will not send without user verification.',
+        contextUsed: ['Calendar Event', 'Clipboard Context']
       };
-    }
-    // 3. CREATE NOTE INTENT
-    else if (
-      textLower.includes('note') ||
-      textLower.includes('take a note') ||
-      textLower.includes('remember this') ||
-      textLower.includes('save this')
-    ) {
-      const noteContent = hasClipboard ? clipText : speechText.replace(/note|take a note|save this|remember/gi, '').trim();
-      resultIntent = {
-        intent: 'create_note',
-        confidence: 0.90,
-        requiresConfirmation: false,
-        entities: {
-          title: speechText.slice(0, 30),
-          content: noteContent || speechText
+    } else {
+      agentResult = {
+        intent: 'AUTONOMOUS_TASK_ASSISTANT',
+        reasoning: rawOllamaOutput || `Analyzed prompt: "${promptText}". Checked active schedule and context.`,
+        action: {
+          id: 'action_general_execute',
+          type: 'DISPLAY_RECOMMENDATION',
+          title: '⚡ Apply Smart Recommendation',
+          description: `Execute context-optimized action for: "${promptText}"`,
+          payload: { promptText }
         },
-        actionPayload: {
-          type: 'SAVE_NOTE',
-          title: 'ContextFlow Note',
-          content: noteContent || speechText
-        },
-        summary: `Saved note: "${noteContent || speechText}"`
-      };
-    }
-    // 4. CREATE REMINDER INTENT
-    else if (
-      textLower.includes('remind me') ||
-      textLower.includes('reminder') ||
-      textLower.includes('schedule')
-    ) {
-      let timeStr = 'in 1 hour';
-      if (textLower.includes('at 5') || textLower.includes('5 pm')) timeStr = '5:00 PM';
-      if (textLower.includes('tomorrow')) timeStr = 'Tomorrow 9:00 AM';
-
-      resultIntent = {
-        intent: 'create_reminder',
-        confidence: 0.88,
-        requiresConfirmation: true,
-        entities: {
-          task: speechText.replace(/remind me|reminder|schedule/gi, '').trim() || 'Follow up',
-          time: timeStr
-        },
-        actionPayload: {
-          type: 'CREATE_SYSTEM_REMINDER',
-          task: speechText.replace(/remind me|reminder|schedule/gi, '').trim() || 'Follow up',
-          time: timeStr
-        },
-        summary: `Scheduled reminder: "${speechText}" for ${timeStr}`
-      };
-    }
-    // 5. EXPLAIN / SEARCH INTENT
-    else if (textLower.includes('explain') || textLower.includes('what is') || textLower.includes('search')) {
-      const query = hasClipboard ? clipText : speechText;
-      resultIntent = {
-        intent: 'explain',
-        confidence: 0.89,
-        requiresConfirmation: false,
-        entities: {
-          query,
-          explanation: `ContextFlow AI Analysis of "${query}": This text refers to mobile intent execution & context awareness.`
-        },
-        actionPayload: {
-          type: 'DISPLAY_INFO',
-          content: `Explanation: "${query}" - Analyzed via ContextFlow AI engine.`
-        },
-        summary: `Provided explanation for: "${query.slice(0, 40)}..."`
-      };
-    }
-    // 6. DEFAULT GENERAL FALLBACK
-    else {
-      resultIntent = {
-        intent: 'general_assistant',
-        confidence: 0.80,
-        requiresConfirmation: false,
-        entities: {
-          query: speechText,
-          contextUsed: hasClipboard ? 'clipboard' : 'none'
-        },
-        actionPayload: {
-          type: 'DISPLAY_RESPONSE',
-          responseText: `Processed voice input: "${speechText}"${hasClipboard ? ` with context: "${clipText}"` : ''}`
-        },
-        summary: `Processed input with ${hasClipboard ? 'clipboard context' : 'no active context'}.`
+        responsibleAgentNote: 'Actionable workflow generated with safety verification step.',
+        contextUsed: ['Active Context', 'User Preferences']
       };
     }
 
     res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      input: {
-        speechText,
-        hasClipboardContext: hasClipboard,
-        appContext: appContext || null
-      },
-      result: resultIntent
+      aiEngine: rawOllamaOutput ? `Ollama (${OLLAMA_MODEL})` : 'ContextFlow Fast Agent Engine',
+      context,
+      result: agentResult
     });
 
-  } catch (error) {
-    console.error('Error processing intent:', error);
-    res.status(500).json({
-      error: 'Server error',
-      message: error.message
-    });
+  } catch (err) {
+    console.error('Error in life-assistant:', err);
+    res.status(500).json({ error: 'Server error', message: err.message });
   }
+});
+
+/**
+ * Feedback & Learning Endpoint
+ * Flow: Verification -> Learning
+ */
+app.post('/api/feedback-learn', (req, res) => {
+  try {
+    const { actionId, userChoice, contextCondition } = req.body;
+
+    let learnedRuleText = '';
+    if (actionId === 'action_book_cab' || userChoice === 'BOOK_CAB') {
+      learnedRuleText = 'User prefers Cab when Metro delay > 15 mins';
+    } else if (actionId === 'action_send_message') {
+      learnedRuleText = 'User prefers quick automated status drafts during class commute';
+    } else {
+      learnedRuleText = `User chose ${userChoice || 'custom action'} under condition: ${contextCondition || 'standard'}`;
+    }
+
+    const newRule = learningStore.addLearnedRule(learnedRuleText, contextCondition || 'User Action Choice');
+    learningStore.logDecision({ actionId, userChoice, learnedRule: learnedRuleText });
+
+    res.json({
+      success: true,
+      message: 'Feedback received & AI preference updated!',
+      learnedRule: newRule,
+      allRules: learningStore.getLearnedRules()
+    });
+  } catch (err) {
+    console.error('Error recording learning feedback:', err);
+    res.status(500).json({ error: 'Server error', message: err.message });
+  }
+});
+
+/**
+ * Get Active Learned Rules Endpoint
+ */
+app.get('/api/learning-rules', (req, res) => {
+  res.json({
+    success: true,
+    rules: learningStore.getLearnedRules(),
+    history: learningStore.getDecisionHistory()
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`====================================================`);
-  console.log(`🚀 ContextFlow Node.js Server running on port ${PORT}`);
-  console.log(`📡 Health Check: http://localhost:${PORT}/api/health`);
-  console.log(`🤖 Intent API:   http://localhost:${PORT}/api/process-intent`);
+  console.log(`🚀 ContextFlow "Operate Your Life" Agent running on port ${PORT}`);
+  console.log(`🤖 Ollama Model Target: ${OLLAMA_MODEL} (${OLLAMA_URL})`);
+  console.log(`📡 Health Check:  http://127.0.0.1:${PORT}/api/health`);
+  console.log(`⚡ Agent Engine:  http://127.0.0.1:${PORT}/api/life-assistant`);
+  console.log(`🧠 Learning API:  http://127.0.0.1:${PORT}/api/feedback-learn`);
   console.log(`====================================================`);
 });

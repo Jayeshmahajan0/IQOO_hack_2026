@@ -9,113 +9,160 @@ import {
   SafeAreaView,
   StatusBar,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
-import { checkServerHealth, processVoiceIntent } from './src/services/apiService';
-import { getClipboardContext, setMockClipboardContext, getActiveAppContext } from './src/services/contextService';
-import { executeAction } from './src/services/actionEngine';
+import {
+  checkServerHealth,
+  processLifeAssistant,
+  submitLearningFeedback,
+  fetchLearningRules,
+} from './src/services/apiService';
+import { getFusedContext } from './src/services/contextService';
+import { executeAgentAction } from './src/services/actionEngine';
 
 export default function App() {
   const [serverOnline, setServerOnline] = useState(false);
-  const [speechInput, setSpeechInput] = useState('Make this shorter');
-  const [clipboardText, setClipboardText] = useState('');
+  const [ollamaInfo, setOllamaInfo] = useState({ status: 'checking', targetModel: 'llama3.2:1b' });
+  const [promptText, setPromptText] = useState("I'm getting late for college");
   const [isRecording, setIsRecording] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [aiResult, setAiResult] = useState(null);
+  
+  // Agent state
+  const [agentResult, setAgentResult] = useState(null);
   const [actionLog, setActionLog] = useState(null);
+  const [learningNotice, setLearningNotice] = useState(null);
+  const [learnedRules, setLearnedRules] = useState([]);
+  const [showRulesModal, setShowRulesModal] = useState(false);
+
+  // Fused context state
+  const contextData = getFusedContext();
 
   useEffect(() => {
-    async function initData() {
-      // Check Node.js backend health
+    async function initServer() {
       const health = await checkServerHealth();
       setServerOnline(health.online);
+      if (health.ollama) {
+        setOllamaInfo(health.ollama);
+      }
 
-      // Load current clipboard context
-      const clip = await getClipboardContext();
-      setClipboardText(clip);
+      const rulesRes = await fetchLearningRules();
+      if (rulesRes.rules) {
+        setLearnedRules(rulesRes.rules);
+      }
     }
-    initData();
+    initServer();
   }, []);
 
-  const handleUpdateClipboard = (text) => {
-    setClipboardText(text);
-    setMockClipboardContext(text);
-  };
-
-  const handleProcessIntent = async (textToProcess = speechInput) => {
-    if (!textToProcess.trim()) return;
+  const handleRunAgent = async (textToRun = promptText) => {
+    if (!textToRun.trim()) return;
     setLoading(true);
     setActionLog(null);
+    setLearningNotice(null);
 
-    const appContext = getActiveAppContext();
-    const response = await processVoiceIntent(textToProcess, clipboardText, appContext);
+    const response = await processLifeAssistant(textToRun, contextData);
     setLoading(false);
 
     if (response && response.result) {
-      setAiResult(response.result);
+      setAgentResult(response.result);
     }
   };
 
-  const handleExecuteAction = () => {
-    if (!aiResult || !aiResult.actionPayload) return;
-    const log = executeAction(aiResult.actionPayload, handleUpdateClipboard);
+  const handleChooseAction = async (actionObj, choiceType) => {
+    if (!actionObj) return;
+
+    // 1. Execute action safely
+    const log = executeAgentAction(actionObj);
     setActionLog(log);
+
+    // 2. Trigger Verification -> Learning loop
+    const feedback = await submitLearningFeedback(
+      actionObj.id || choiceType,
+      choiceType,
+      'Metro delay 20 mins'
+    );
+
+    if (feedback && feedback.learnedRule) {
+      setLearningNotice(feedback.learnedRule.rule || feedback.message);
+      // Refresh learned rules list
+      const updatedRules = await fetchLearningRules();
+      if (updatedRules.rules) setLearnedRules(updatedRules.rules);
+    }
   };
 
-  const speechPresets = [
-    'Make this shorter',
-    'Make it formal',
-    'Tell Rahul I will reach in 15 minutes',
-    'Remind me to send the slides at 5 PM',
-    'Explain this error message',
+  const quickScenarios = [
+    "I'm getting late for college",
+    "Pre-draft status update to study group",
+    "Check commute & traffic updates",
   ];
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
+      <StatusBar barStyle="light-content" backgroundColor="#090d16" />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         
-        {/* Header */}
+        {/* Header with Server & Ollama llama3.2:1b status */}
         <View style={styles.header}>
           <View>
-            <Text style={styles.title}>ContextFlow</Text>
-            <Text style={styles.subtitle}>Context-Aware Voice Assistant</Text>
+            <Text style={styles.appTitle}>ContextFlow</Text>
+            <Text style={styles.appTagline}>Autonomous Life Assistant</Text>
           </View>
-          <View style={[styles.badge, serverOnline ? styles.badgeOnline : styles.badgeOffline]}>
-            <View style={[styles.dot, serverOnline ? styles.dotOnline : styles.dotOffline]} />
-            <Text style={styles.badgeText}>
-              {serverOnline ? 'Node.js Online' : 'Offline / Standalone'}
-            </Text>
+          <View style={styles.statusGroup}>
+            <View style={[styles.badge, serverOnline ? styles.badgeOnline : styles.badgeOffline]}>
+              <View style={[styles.dot, serverOnline ? styles.dotOnline : styles.dotOffline]} />
+              <Text style={styles.badgeText}>{serverOnline ? 'Server: 127.0.0.1' : 'Offline'}</Text>
+            </View>
+            <View style={[styles.badge, styles.badgeOllama]}>
+              <Text style={styles.badgeText}>🦙 {ollamaInfo.targetModel || 'llama3.2:1b'}</Text>
+            </View>
           </View>
         </View>
 
-        {/* Section 1: Context Monitor Card */}
+        {/* Fused Context Drawer */}
         <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardIcon}>📋</Text>
-            <Text style={styles.cardTitle}>Active Device Context</Text>
+          <View style={styles.cardHeaderBetween}>
+            <View style={styles.rowAlign}>
+              <Text style={styles.cardIcon}>🌐</Text>
+              <Text style={styles.cardTitle}>Fused Multi-Modal Context</Text>
+            </View>
+            <TouchableOpacity onPress={() => setShowRulesModal(true)}>
+              <Text style={styles.memoryLink}>🧠 Learning Memory ({learnedRules.length})</Text>
+            </TouchableOpacity>
           </View>
 
-          <Text style={styles.inputLabel}>Current Clipboard Content:</Text>
-          <TextInput
-            style={styles.textArea}
-            multiline
-            numberOfLines={3}
-            value={clipboardText}
-            onChangeText={handleUpdateClipboard}
-            placeholder="Clipboard content..."
-            placeholderTextColor="#64748b"
-          />
+          <View style={styles.contextGrid}>
+            <View style={styles.contextBox}>
+              <Text style={styles.contextBoxLabel}>📍 Location</Text>
+              <Text style={styles.contextBoxValue}>{contextData.location}</Text>
+            </View>
+            <View style={styles.contextBox}>
+              <Text style={styles.contextBoxLabel}>📅 Calendar Event</Text>
+              <Text style={styles.contextBoxValue}>
+                {contextData.calendar.event} @ {contextData.calendar.startTime}
+              </Text>
+            </View>
+          </View>
 
-          <View style={styles.contextInfoRow}>
-            <Text style={styles.contextInfoText}>📱 Active App: <Text style={styles.highlight}>WhatsApp / Messages</Text></Text>
+          <View style={styles.contextGrid}>
+            <View style={styles.contextBox}>
+              <Text style={styles.contextBoxLabel}>🚦 Traffic Alert</Text>
+              <Text style={[styles.contextBoxValue, styles.warningText]}>
+                {contextData.traffic.metroStatus}
+              </Text>
+            </View>
+            <View style={styles.contextBox}>
+              <Text style={styles.contextBoxLabel}>📋 Clipboard Context</Text>
+              <Text style={styles.contextBoxValue} numberOfLines={1}>
+                "{contextData.clipboard}"
+              </Text>
+            </View>
           </View>
         </View>
 
-        {/* Section 2: Voice Input & Controls */}
+        {/* Prompt & Voice Action Bar */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <Text style={styles.cardIcon}>🎙️</Text>
-            <Text style={styles.cardTitle}>Voice Interaction</Text>
+            <Text style={styles.cardTitle}>Voice & Text Trigger</Text>
           </View>
 
           <View style={styles.micContainer}>
@@ -124,99 +171,112 @@ export default function App() {
               onPress={() => {
                 setIsRecording(!isRecording);
                 if (!isRecording) {
-                  setSpeechInput('Make this shorter');
+                  setPromptText("I'm getting late for college");
                 }
               }}
             >
               <Text style={styles.micIcon}>{isRecording ? '⏹️' : '🎙️'}</Text>
             </TouchableOpacity>
             <Text style={styles.micStateText}>
-              {isRecording ? 'Listening for speech...' : 'Tap microphone or use quick presets'}
+              {isRecording ? 'Listening for voice prompt...' : 'Tap mic or select hackathon scenario'}
             </Text>
           </View>
 
-          <Text style={styles.inputLabel}>Speech Input Transcript:</Text>
           <TextInput
             style={styles.textInput}
-            value={speechInput}
-            onChangeText={setSpeechInput}
-            placeholder="Type or speak prompt..."
+            value={promptText}
+            onChangeText={setPromptText}
+            placeholder="Tell ContextFlow what's happening..."
             placeholderTextColor="#64748b"
           />
 
-          <Text style={styles.presetHeader}>Quick Voice Presets:</Text>
           <View style={styles.presetContainer}>
-            {speechPresets.map((preset, index) => (
+            {quickScenarios.map((sc, idx) => (
               <TouchableOpacity
-                key={index}
+                key={idx}
                 style={styles.presetChip}
                 onPress={() => {
-                  setSpeechInput(preset);
-                  handleProcessIntent(preset);
+                  setPromptText(sc);
+                  handleRunAgent(sc);
                 }}
               >
-                <Text style={styles.presetText}>{preset}</Text>
+                <Text style={styles.presetText}>{sc}</Text>
               </TouchableOpacity>
             ))}
           </View>
 
           <TouchableOpacity
             style={styles.primaryButton}
-            onPress={() => handleProcessIntent()}
+            onPress={() => handleRunAgent()}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#ffffff" />
             ) : (
-              <Text style={styles.primaryButtonText}>⚡ Process Voice + Context</Text>
+              <Text style={styles.primaryButtonText}>⚡ Run Autonomous Life Loop</Text>
             )}
           </TouchableOpacity>
         </View>
 
-        {/* Section 3: AI Intent Understanding & Execution */}
-        {aiResult && (
-          <View style={[styles.card, styles.resultCard]}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardIcon}>🧠</Text>
-              <Text style={styles.cardTitle}>Structured Intent Output</Text>
+        {/* AI Intent & Action Card */}
+        {agentResult && (
+          <View style={[styles.card, styles.agentCard]}>
+            <View style={styles.cardHeaderBetween}>
+              <View style={styles.rowAlign}>
+                <Text style={styles.cardIcon}>🤖</Text>
+                <Text style={styles.cardTitle}>Agent Recommendation</Text>
+              </View>
+              <Text style={styles.intentTag}>{agentResult.intent}</Text>
             </View>
 
-            <View style={styles.intentRow}>
-              <Text style={styles.intentLabel}>Detected Intent:</Text>
-              <Text style={styles.intentValue}>{aiResult.intent}</Text>
-            </View>
+            {/* Reasoning text */}
+            <Text style={styles.reasoningText}>{agentResult.reasoning}</Text>
 
-            <View style={styles.intentRow}>
-              <Text style={styles.intentLabel}>Confidence Score:</Text>
-              <Text style={styles.confidenceValue}>{(aiResult.confidence * 100).toFixed(0)}%</Text>
-            </View>
-
-            <Text style={styles.summaryText}>{aiResult.summary}</Text>
-
-            <Text style={styles.codeLabel}>Structured JSON (Intent Router):</Text>
-            <View style={styles.codeBox}>
-              <Text style={styles.codeText}>
-                {JSON.stringify(aiResult, null, 2)}
+            {/* Responsible Agent Notice */}
+            <View style={styles.responsibleNoticeBox}>
+              <Text style={styles.responsibleNoticeTitle}>🛡️ Responsible Agent Safeguard</Text>
+              <Text style={styles.responsibleNoticeText}>
+                {agentResult.responsibleAgentNote}
               </Text>
             </View>
 
-            {aiResult.actionPayload && (
-              <TouchableOpacity
-                style={styles.actionButton}
-                onPress={handleExecuteAction}
-              >
-                <Text style={styles.actionButtonText}>
-                  ▶️ Execute Intent Action ({aiResult.actionPayload.type})
-                </Text>
-              </TouchableOpacity>
-            )}
+            {/* Context used tags */}
+            <View style={styles.contextTagsRow}>
+              {agentResult.contextUsed && agentResult.contextUsed.map((ctx, i) => (
+                <Text key={i} style={styles.contextTag}>• {ctx}</Text>
+              ))}
+            </View>
+
+            {/* Action Buttons */}
+            <View style={styles.actionButtonsContainer}>
+              {agentResult.action && (
+                <TouchableOpacity
+                  style={styles.actionButtonPrimary}
+                  onPress={() => handleChooseAction(agentResult.action, 'BOOK_CAB')}
+                >
+                  <Text style={styles.actionButtonPrimaryText}>{agentResult.action.title}</Text>
+                  {agentResult.action.description && (
+                    <Text style={styles.actionButtonSub}>{agentResult.action.description}</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+
+              {agentResult.alternativeAction && (
+                <TouchableOpacity
+                  style={styles.actionButtonSecondary}
+                  onPress={() => handleChooseAction(agentResult.alternativeAction, 'TAKE_METRO')}
+                >
+                  <Text style={styles.actionButtonSecondaryText}>{agentResult.alternativeAction.title}</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         )}
 
-        {/* Section 4: Action Log Notification */}
+        {/* Action Executed Banner */}
         {actionLog && (
           <View style={[styles.card, styles.actionSuccessCard]}>
-            <Text style={styles.actionSuccessHeader}>✅ Action Executed Successfully</Text>
+            <Text style={styles.actionSuccessHeader}>✅ {actionLog.title || 'Action Confirmed'}</Text>
             <Text style={styles.actionSuccessMessage}>{actionLog.message}</Text>
             {actionLog.details && (
               <Text style={styles.actionSuccessDetails}>{actionLog.details}</Text>
@@ -224,7 +284,46 @@ export default function App() {
           </View>
         )}
 
+        {/* Verification & Learning Loop Toast */}
+        {learningNotice && (
+          <View style={[styles.card, styles.learningCard]}>
+            <View style={styles.rowAlign}>
+              <Text style={styles.cardIcon}>🧠</Text>
+              <Text style={styles.learningHeader}>Verification → Learning Loop Updated</Text>
+            </View>
+            <Text style={styles.learningText}>
+              Stored Rule: <Text style={styles.learningRuleHighlight}>"{learningNotice}"</Text>
+            </Text>
+            <Text style={styles.learningSubtext}>
+              Next time this context occurs, ContextFlow will automatically apply your learned preference.
+            </Text>
+          </View>
+        )}
+
       </ScrollView>
+
+      {/* Learning Memory Modal */}
+      <Modal visible={showRulesModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.cardHeaderBetween}>
+              <Text style={styles.cardTitle}>🧠 Learned User Memory</Text>
+              <TouchableOpacity onPress={() => setShowRulesModal(false)}>
+                <Text style={styles.closeModalText}>✕ Close</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalScroll}>
+              {learnedRules.map((r, i) => (
+                <View key={i} style={styles.ruleItem}>
+                  <Text style={styles.ruleText}>• {r.rule}</Text>
+                  {r.source && <Text style={styles.ruleSource}>{r.source}</Text>}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
@@ -241,27 +340,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
-    marginTop: 10,
+    marginBottom: 16,
+    marginTop: 6,
   },
-  title: {
-    fontSize: 26,
+  appTitle: {
+    fontSize: 24,
     fontWeight: '800',
     color: '#38bdf8',
     letterSpacing: 0.5,
   },
-  subtitle: {
-    fontSize: 13,
+  appTagline: {
+    fontSize: 12,
     color: '#94a3b8',
     marginTop: 2,
+  },
+  statusGroup: {
+    alignItems: 'flex-end',
   },
   badge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
     borderWidth: 1,
+    marginBottom: 4,
   },
   badgeOnline: {
     backgroundColor: 'rgba(16, 185, 129, 0.15)',
@@ -271,20 +374,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(245, 158, 11, 0.15)',
     borderColor: '#f59e0b',
   },
+  badgeOllama: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    borderColor: '#38bdf8',
+  },
   dot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     marginRight: 6,
   },
-  dotOnline: {
-    backgroundColor: '#10b981',
-  },
-  dotOffline: {
-    backgroundColor: '#f59e0b',
-  },
+  dotOnline: { backgroundColor: '#10b981' },
+  dotOffline: { backgroundColor: '#f59e0b' },
   badgeText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
     color: '#f8fafc',
   },
@@ -296,7 +399,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
-  resultCard: {
+  agentCard: {
     borderColor: '#38bdf8',
     backgroundColor: '#0f172a',
   },
@@ -304,35 +407,94 @@ const styles = StyleSheet.create({
     borderColor: '#10b981',
     backgroundColor: 'rgba(16, 185, 129, 0.1)',
   },
+  learningCard: {
+    borderColor: '#a855f7',
+    backgroundColor: 'rgba(168, 85, 247, 0.1)',
+  },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
+  },
+  cardHeaderBetween: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  rowAlign: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   cardIcon: {
     fontSize: 18,
     marginRight: 8,
   },
   cardTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     color: '#f8fafc',
   },
-  inputLabel: {
+  memoryLink: {
     fontSize: 12,
+    color: '#a855f7',
     fontWeight: '600',
-    color: '#94a3b8',
-    marginBottom: 6,
   },
-  textArea: {
+  contextGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  contextBox: {
+    flex: 1,
     backgroundColor: '#0f172a',
     borderRadius: 10,
-    padding: 12,
-    color: '#f8fafc',
-    fontSize: 13,
+    padding: 10,
+    marginHorizontal: 3,
     borderWidth: 1,
     borderColor: '#334155',
-    textAlignVertical: 'top',
+  },
+  contextBoxLabel: {
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  contextBoxValue: {
+    fontSize: 12,
+    color: '#f8fafc',
+    fontWeight: '500',
+  },
+  warningText: {
+    color: '#f59e0b',
+  },
+  micContainer: {
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  micButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#0284c7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#38bdf8',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+  },
+  micButtonActive: {
+    backgroundColor: '#ef4444',
+  },
+  micIcon: {
+    fontSize: 26,
+  },
+  micStateText: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 6,
   },
   textInput: {
     backgroundColor: '#0f172a',
@@ -342,68 +504,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     borderWidth: 1,
     borderColor: '#334155',
-    marginBottom: 12,
-  },
-  contextInfoRow: {
-    marginTop: 10,
-  },
-  contextInfoText: {
-    fontSize: 12,
-    color: '#94a3b8',
-  },
-  highlight: {
-    color: '#38bdf8',
-    fontWeight: '600',
-  },
-  micContainer: {
-    alignItems: 'center',
-    marginVertical: 12,
-  },
-  micButton: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: '#0284c7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 5,
-    shadowColor: '#38bdf8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-  },
-  micButtonActive: {
-    backgroundColor: '#ef4444',
-  },
-  micIcon: {
-    fontSize: 28,
-  },
-  micStateText: {
-    fontSize: 12,
-    color: '#94a3b8',
-    marginTop: 8,
-  },
-  presetHeader: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#94a3b8',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   presetContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   presetChip: {
     backgroundColor: '#334155',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 14,
     marginRight: 6,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   presetText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#e2e8f0',
   },
   primaryButton: {
@@ -414,68 +531,85 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  intentRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  intentLabel: {
-    fontSize: 13,
-    color: '#94a3b8',
-  },
-  intentValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#38bdf8',
-  },
-  confidenceValue: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#10b981',
+    fontWeight: '700',
   },
-  summaryText: {
+  intentTag: {
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+    color: '#38bdf8',
+    fontSize: 10,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  reasoningText: {
     fontSize: 13,
     color: '#e2e8f0',
-    fontStyle: 'italic',
-    marginVertical: 8,
-    padding: 8,
-    backgroundColor: '#1e293b',
-    borderRadius: 8,
-  },
-  codeLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  codeBox: {
-    backgroundColor: '#020617',
-    padding: 10,
-    borderRadius: 8,
+    lineHeight: 19,
     marginBottom: 12,
   },
-  codeText: {
-    color: '#38bdf8',
-    fontFamily: 'monospace',
-    fontSize: 11,
+  responsibleNoticeBox: {
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: '#10b981',
   },
-  actionButton: {
+  responsibleNoticeTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#10b981',
+    marginBottom: 2,
+  },
+  responsibleNoticeText: {
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  contextTagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 14,
+  },
+  contextTag: {
+    fontSize: 10,
+    color: '#64748b',
+    marginRight: 10,
+  },
+  actionButtonsContainer: {
+    gap: 8,
+  },
+  actionButtonPrimary: {
     backgroundColor: '#10b981',
     paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: 10,
-    alignItems: 'center',
   },
-  actionButtonText: {
+  actionButtonPrimaryText: {
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '700',
   },
+  actionButtonSub: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  actionButtonSecondary: {
+    backgroundColor: '#334155',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  actionButtonSecondaryText: {
+    color: '#e2e8f0',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   actionSuccessHeader: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: '#10b981',
     marginBottom: 4,
@@ -483,10 +617,68 @@ const styles = StyleSheet.create({
   actionSuccessMessage: {
     fontSize: 13,
     color: '#f8fafc',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   actionSuccessDetails: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#94a3b8',
+  },
+  learningHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#c084fc',
+  },
+  learningText: {
+    fontSize: 12,
+    color: '#e2e8f0',
+    marginTop: 4,
+  },
+  learningRuleHighlight: {
+    color: '#a855f7',
+    fontWeight: '700',
+  },
+  learningSubtext: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 4,
+    fontStyle: 'italic',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#0f172a',
+    borderRadius: 16,
+    padding: 20,
+    maxHeight: '70%',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+  },
+  closeModalText: {
+    color: '#ef4444',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  modalScroll: {
+    marginTop: 10,
+  },
+  ruleItem: {
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 8,
+  },
+  ruleText: {
+    fontSize: 12,
+    color: '#f8fafc',
+    fontWeight: '600',
+  },
+  ruleSource: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 2,
   },
 });

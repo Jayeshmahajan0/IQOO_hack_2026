@@ -1,69 +1,63 @@
-# ContextFlow
+# ContextFlow — "Operate Your Life" Hackathon Prototype
 
-> **A context-aware voice interaction layer for mobile powered by React Native and Node.js.**
+> **An AI agent that operates your life, not just answers you.**
 
-ContextFlow is a mobile-first AI assistant that goes beyond speech-to-text.
+ContextFlow goes beyond speech-to-text or plain chat Q&A. It is an autonomous mobile assistant built around a complete execution loop:
 
-Instead of:
 ```text
-Voice → Text
-```
-
-ContextFlow executes:
-```text
-Voice + Context → Intent Router (Node.js) → Action Engine (React Native)
+Intent → Context → Action → Verification → Learning
 ```
 
 ---
 
-## 🚀 Key Prototype Architecture
+## 🏆 Hackathon Pitch & Demonstration Scenario
 
-1. **Frontend**: React Native UI (`/mobile`) with dark glassmorphic interface, real-time context viewer, quick voice presets, intent visualization, and action execution buttons.
-2. **Backend**: Node.js + Express server (`/server`) serving as the AI Intent Router that processes voice input alongside clipboard/app context into validated structured JSON.
+### Scenario: *"I'm getting late for college."*
+
+Instead of returning text output or searching the web, ContextFlow fuses multi-modal context:
+- **Location**: Home (Sector 62, Noida)
+- **Calendar**: Mobile Computing Lecture @ 10:00 AM
+- **Traffic**: Metro Blue Line delayed by 20 mins; Cab available & 11 mins faster
+- **Learning Memory**: User preferences & past decision history
+
+### Proactive Output:
+> *"Your class starts at 10:00. You're 28 minutes away. You normally take the metro, but today's route is delayed by 20 minutes. A cab is 11 minutes faster. Should I book one?"*
+
+### Actionable Buttons:
+- `[🚕 Book Cab (11 mins faster)]`
+- `[🚇 Take Metro Anyway]`
+
+### Verification & Learning Loop:
+When the user taps `[Book Cab]`, the system logs the decision and learns:
+> *"User prefers Cab over Metro when Metro delay > 15 minutes."*
+
+Next time a similar situation occurs, ContextFlow automatically adapts its recommendations based on this learned preference.
 
 ---
 
-## 🛠️ Quick Start Instructions
+## 🛠️ Technology Stack
 
-### 1. Start the Node.js Server
+- **Mobile Frontend**: React Native UI (`/mobile`) with clean dark glassmorphism, voice input trigger, context fusion drawer, proactive action cards, and learning memory inspector.
+- **Backend Server**: Node.js + Express (`/server`) managing intent classification, context fusion, and the learning store.
+- **Local AI Engine**: Integrated with local **Ollama `llama3.2:1b`** model (`http://127.0.0.1:11434`) for offline, zero-latency inference on device hardware.
 
+---
+
+## 🚀 Quick Start Guide
+
+### 1. Start Node.js Backend Server
 ```bash
 cd server
-npm install
 npm start
 ```
-The server runs at `http://localhost:5000`.
+Server runs at `http://127.0.0.1:5000`.
 
-### 2. Start the React Native App
-
+### 2. Start React Native App
 ```bash
 cd mobile
-npm install
 npm start
 ```
-Run on Android device, emulator, or Web browser (`npm run web`).
-
----
-
-## 💡 Example Usage Flow
-
-1. **Copy text to clipboard** (e.g. *"Hey bro see you tomorrow at 5"*).
-2. **Select speech preset or record**: *"Make it formal"*.
-3. **Node.js Server processes request** and returns structured JSON:
-   ```json
-   {
-     "intent": "rewrite",
-     "confidence": 0.95,
-     "entities": {
-       "operation": "make_formal",
-       "processedContent": "Dear Sir/Madam, I am writing to inform you regarding: Hey bro see you tomorrow at 5..."
-     },
-     "actionPayload": {
-       "type": "COPY_TO_CLIPBOARD"
-     }
-   }
-   ```
-4. **React Native UI executes action**: Overwrites clipboard with formal text ready to send.
+Run on Android, iOS, or Web (`npm run web`).
 
 ---
 
@@ -71,23 +65,23 @@ Run on Android device, emulator, or Web browser (`npm run web`).
 
 ```text
 IQOO_hack_2026/
-├── server/                    # Node.js + Express Backend Server
-│   ├── server.js              # Intent API endpoints & AI routing
+├── server/                    # Node.js + Express Backend
+│   ├── server.js              # Ollama llama3.2:1b & life-assistant loop
+│   ├── learningStore.js       # Memory store for learned rules
 │   ├── package.json
 │   └── .env.example
 ├── mobile/                    # React Native UI App
-│   ├── App.js                 # Main App Screen
+│   ├── App.js                 # Clean Actionable Agent UI
 │   ├── src/
 │   │   └── services/
-│   │       ├── apiService.js  # Node.js API connection
-│   │       ├── contextService.js # Clipboard & App context
-│   │       └── actionEngine.js # Action execution module
+│   │       ├── apiService.js  # Server & Ollama client API
+│   │       ├── contextService.js # Fused Context Manager
+│   │       └── actionEngine.js # Responsible Action Executor
 │   └── package.json
 ├── architecture.md
 ├── dependency.md
 ├── plan.md
 ├── ps.md
-├── resources.md
 ├── techstack.md
 └── README.md
 ```
