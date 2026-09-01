@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { registerRootComponent } from 'expo';
 import {
   StyleSheet,
   Text,
@@ -682,3 +683,5 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 });
+
+registerRootComponent(App);
