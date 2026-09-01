@@ -2,12 +2,12 @@
   "name": "contextflow-mobile",
   "version": "1.0.0",
   "description": "ContextFlow React Native Voice + Context AI assistant app",
-  "main": "node_modules/expo/AppEntry.js",
+  "main": "App.js",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "start": "npx expo start",
+    "android": "npx expo start --android",
+    "ios": "npx expo start --ios",
+    "web": "npx expo start --web"
   },
   "dependencies": {
     "expo": "~51.0.0",
