@@ -117,8 +117,8 @@ export default function App() {
   const handleExecuteAction = async (msgId, actionCard) => {
     if (!actionCard) return;
 
-    // Execute client action
-    const execution = executeAgentAction(actionCard);
+    // Execute real native client action
+    const execution = await executeAgentAction(actionCard);
 
     // Update message state with confirmation badge
     setMessages((prev) =>

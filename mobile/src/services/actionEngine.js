@@ -1,75 +1,139 @@
 /**
- * Universal Action Engine - ContextFlow
- * Responsible execution of any actionable AI agent decision
+ * Real Native Action Engine - ContextFlow
+ * Triggers actual device applications via React Native Linking API
  */
+import { Linking } from 'react-native';
 
-export function executeAgentAction(actionCard) {
-  if (!actionCard) return { success: false, title: 'No Action', message: 'No executable action payload found.' };
+export async function executeAgentAction(actionCard) {
+  if (!actionCard) {
+    return { success: false, title: 'No Action', message: 'No executable action payload found.' };
+  }
 
   const type = actionCard.type || 'GENERAL';
+  const data = actionCard.actionData || {};
 
-  switch (type) {
-    case 'RIDE_BOOKING':
-      return {
-        success: true,
-        type: 'RIDE_BOOKING',
-        title: '🚕 Uber Dispatch Confirmed',
-        message: 'Uber Go driver assigned & en route to your location.',
-        details: 'ETA: 3 mins • Estimated Fare: ₹180'
-      };
+  try {
+    switch (type) {
+      // 1. REAL WHATSAPP ACTION
+      case 'MESSAGE_DRAFT': {
+        const text = data.text || 'Hey, checking in with ContextFlow AI!';
+        const whatsappUrl = `whatsapp://send?text=${encodeURIComponent(text)}`;
+        const webWhatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
 
-    case 'MEDIA_PLAYER':
-      return {
-        success: true,
-        type: 'MEDIA_PLAYER',
-        title: '🎵 Spotify Player Opened',
-        message: 'Launching Spotify and playing recommended playlist.',
-        details: 'Playing: "Deep Focus AI Playlist"'
-      };
+        const canOpen = await Linking.canOpenURL(whatsappUrl);
+        if (canOpen) {
+          await Linking.openURL(whatsappUrl);
+        } else {
+          await Linking.openURL(webWhatsappUrl);
+        }
 
-    case 'MESSAGE_DRAFT':
-      return {
-        success: true,
-        type: 'MESSAGE_DRAFT',
-        title: '💬 WhatsApp Message Sent',
-        message: 'Message delivered to contact.',
-        details: 'Text: "Hey, heading over now. Talk shortly!"'
-      };
+        return {
+          success: true,
+          type: 'MESSAGE_DRAFT',
+          title: '💬 Opened WhatsApp Composer',
+          message: `Launched WhatsApp with pre-filled message: "${text}"`,
+          details: `Recipient: ${data.recipient || 'Contact'}`
+        };
+      }
 
-    case 'SYSTEM_LAUNCH':
-      return {
-        success: true,
-        type: 'SYSTEM_LAUNCH',
-        title: '🚀 Application Launched',
-        message: `Successfully launched target application.`,
-        details: `App: ${actionCard.title || 'System App'}`
-      };
+      // 2. REAL SPOTIFY ACTION
+      case 'MEDIA_PLAYER': {
+        const spotifyAppUrl = 'spotify://';
+        const spotifyWebUrl = 'https://open.spotify.com';
 
-    case 'REMINDER_CARD':
-      return {
-        success: true,
-        type: 'REMINDER_CARD',
-        title: '⏰ Smart Reminder Saved',
-        message: 'Scheduled reminder in system clock.',
-        details: actionCard.subtitle || 'Reminder set.'
-      };
+        const canOpen = await Linking.canOpenURL(spotifyAppUrl);
+        if (canOpen) {
+          await Linking.openURL(spotifyAppUrl);
+        } else {
+          await Linking.openURL(spotifyWebUrl);
+        }
 
-    case 'INFO_CARD':
-      return {
-        success: true,
-        type: 'INFO_CARD',
-        title: '🔍 Web Insight Loaded',
-        message: 'Opened full research details.',
-        details: actionCard.subtitle || 'Query processed.'
-      };
+        return {
+          success: true,
+          type: 'MEDIA_PLAYER',
+          title: '🎵 Opened Spotify App',
+          message: 'Launched Spotify player on device.',
+          details: 'Playing focus audio session'
+        };
+      }
 
-    default:
-      return {
-        success: true,
-        type: 'GENERAL_ACTION',
-        title: '⚡ Action Executed',
-        message: `Executed: ${actionCard.title || 'Task action'}`,
-        details: actionCard.subtitle || 'Completed successfully.'
-      };
+      // 3. REAL GOOGLE MAPS / RIDE ACTION
+      case 'RIDE_BOOKING': {
+        const destination = data.dropoff || 'Campus Hall B';
+        const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(destination)}`;
+
+        await Linking.openURL(mapsUrl);
+
+        return {
+          success: true,
+          type: 'RIDE_BOOKING',
+          title: '🚕 Google Maps Navigation Opened',
+          message: `Opened navigation to ${destination}.`,
+          details: `Fare estimate: ${data.fare || '₹180'}`
+        };
+      }
+
+      // 4. REAL SYSTEM APP / WEB SEARCH ACTION
+      case 'SYSTEM_LAUNCH': {
+        const appName = (data.appName || '').toLowerCase();
+        let targetUrl = 'https://www.google.com';
+
+        if (appName.includes('map') || appName.includes('direction')) {
+          targetUrl = 'https://www.google.com/maps';
+        } else if (appName.includes('clock') || appName.includes('alarm')) {
+          targetUrl = 'https://www.google.com/search?q=online+alarm+clock';
+        } else if (appName.includes('camera')) {
+          targetUrl = 'https://www.google.com/search?q=open+camera';
+        }
+
+        await Linking.openURL(targetUrl);
+
+        return {
+          success: true,
+          type: 'SYSTEM_LAUNCH',
+          title: `🚀 Executed Action for ${data.appName || 'App'}`,
+          message: `Opened target native link / web interface.`,
+          details: `App: ${data.appName || 'System Service'}`
+        };
+      }
+
+      // 5. REAL WEB SEARCH ACTION
+      case 'INFO_CARD': {
+        const query = data.query || actionCard.subtitle || 'ContextFlow AI';
+        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+
+        await Linking.openURL(searchUrl);
+
+        return {
+          success: true,
+          type: 'INFO_CARD',
+          title: '🔍 Opened Web Search Results',
+          message: `Searched Google for: "${query}"`,
+          details: query
+        };
+      }
+
+      default: {
+        const query = actionCard.title || 'ContextFlow';
+        const defaultUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+        await Linking.openURL(defaultUrl);
+
+        return {
+          success: true,
+          type: 'GENERAL_ACTION',
+          title: '⚡ Action Executed',
+          message: `Launched native handler for: ${actionCard.title || 'Action'}`,
+          details: actionCard.subtitle || 'Completed successfully.'
+        };
+      }
+    }
+  } catch (error) {
+    console.error('Action execution error:', error);
+    return {
+      success: false,
+      title: 'Action Triggered',
+      message: `Action processed: ${actionCard.title}`,
+      details: error.message
+    };
   }
 }
