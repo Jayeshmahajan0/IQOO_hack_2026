@@ -11,15 +11,13 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:1b';
 app.use(cors());
 app.use(express.json());
 
-// Logging middleware
+// Log requests
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-/**
- * Health Check Endpoint - Node.js + Ollama Status
- */
+// Health check endpoint
 app.get('/api/health', async (req, res) => {
   let ollamaStatus = 'offline';
   let availableModels = [];
@@ -32,12 +30,12 @@ app.get('/api/health', async (req, res) => {
       availableModels = (data.models || []).map(m => m.name);
     }
   } catch (err) {
-    ollamaStatus = 'offline (will use fast embedded AI router)';
+    ollamaStatus = 'offline';
   }
 
   res.json({
     status: 'online',
-    service: 'ContextFlow Autonomous Agent Server',
+    service: 'ContextFlow Universal Action Agent',
     ollama: {
       status: ollamaStatus,
       targetModel: OLLAMA_MODEL,
@@ -48,7 +46,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 /**
- * Helper: Query local Ollama llama3.2:1b model
+ * Ollama Query Helper
  */
 async function queryOllama(promptText, systemPrompt) {
   try {
@@ -57,7 +55,7 @@ async function queryOllama(promptText, systemPrompt) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: OLLAMA_MODEL,
-        prompt: `${systemPrompt}\n\nUser Input: ${promptText}\nResponse:`,
+        prompt: `${systemPrompt}\n\nUser: ${promptText}\nAssistant:`,
         stream: false,
       }),
     });
@@ -66,165 +64,198 @@ async function queryOllama(promptText, systemPrompt) {
     const data = await response.json();
     return data.response;
   } catch (err) {
-    console.log(`[Ollama Query Note]: ${err.message}. Using built-in reasoning engine.`);
+    console.log(`Ollama query note: ${err.message}`);
     return null;
   }
 }
 
 /**
- * Main Autonomous Life Assistant Endpoint
- * Flow: Intent -> Context -> Action
+ * Universal Actionable AI Agent Endpoint
+ * Handles ANY user prompt & returns natural response + executable Action Card
  */
 app.post('/api/life-assistant', async (req, res) => {
   try {
     const { userPrompt, customContext } = req.body;
-    const promptText = userPrompt || "I'm getting late for college";
+    const prompt = (userPrompt || "Hello").trim();
+    const promptLower = prompt.toLowerCase();
 
-    // 1. Gather fused multi-modal context & learned rules
-    const context = {
-      ...learningStore.getCurrentContext(),
+    const activeContext = {
+      ...learningStore.getActiveContext(),
       ...customContext
     };
-    const learnedRules = learningStore.getLearnedRules();
+    const rules = learningStore.getLearnedRules();
 
-    const textLower = promptText.toLowerCase();
+    const systemPrompt = `You are ContextFlow, a friendly, intelligent, and proactive AI Assistant.
+User context: Location: ${activeContext.location}, Schedule: ${activeContext.calendar.event} at ${activeContext.calendar.time}.
+Learned user preferences: ${rules.map(r => r.rule).join('; ')}.
 
-    // 2. Query Ollama local llama3.2:1b model for reasoning
-    const systemPrompt = `You are ContextFlow, an autonomous life-operating AI agent. 
-Analyze the user request combined with user context:
-Location: ${context.location}
-Calendar: ${context.calendar.event} at ${context.calendar.startTime} (${context.calendar.timeUntilEvent})
-Traffic: ${context.traffic.metroStatus} vs ${context.traffic.cabStatus}
-Learned Rules: ${learnedRules.map(r => r.rule).join('; ')}
+Be helpful, concise, and natural.`;
 
-Provide a concise, direct, helpful analysis and recommendation.`;
+    // 1. Get reasoning from Ollama model
+    const ollamaResponse = await queryOllama(prompt, systemPrompt);
 
-    const rawOllamaOutput = await queryOllama(promptText, systemPrompt);
+    // 2. Classify intent & build actionable payload for ANY user query
+    let responseObj = {
+      intent: 'GENERAL_ASSISTANT',
+      speechReply: ollamaResponse || `I'm here to help! How can I assist you today?`,
+      actionCard: null,
+      contextUsed: ['Active Location', 'Preferences']
+    };
 
-    // 3. Construct structured actionable decision object
-    let agentResult = null;
-
-    if (textLower.includes('college') || textLower.includes('late') || textLower.includes('commute') || textLower.includes('class')) {
-      agentResult = {
-        intent: 'OPTIMIZE_COMMUTE_LATE',
-        reasoning: rawOllamaOutput || `Your ${context.calendar.event} starts at ${context.calendar.startTime}. Metro is delayed by 20 minutes due to line congestion. A cab is 11 minutes faster and will ensure you arrive on time.`,
-        action: {
-          id: 'action_book_cab',
-          type: 'BOOK_CAB',
-          title: '🚕 Book Cab (11 mins faster)',
-          description: `Estimated Fare: ₹180 • ETA: 17 mins • Time saved: 11 mins`,
-          payload: {
-            destination: context.calendar.location,
-            pickup: context.location,
-            fare: '₹180',
-            timeSaved: '11 mins'
-          }
-        },
-        alternativeAction: {
-          id: 'action_take_metro',
-          type: 'TAKE_METRO',
-          title: '🚇 Take Metro Anyway',
-          description: `Expected arrival: 10:15 AM (15 mins late)`
-        },
-        responsibleAgentNote: 'Checked calendar & live transit state. Cab booking requires your single-tap confirmation.',
-        contextUsed: ['Current Location', 'Google Calendar', 'Metro Traffic Alert', 'Learned Preferences']
+    // Intent A: Rides & Commute ("book cab", "uber", "late for college", "ride to airport", "metro")
+    if (promptLower.includes('cab') || promptLower.includes('uber') || promptLower.includes('late') || promptLower.includes('ride') || promptLower.includes('commute') || promptLower.includes('college')) {
+      responseObj.intent = 'BOOK_RIDE';
+      responseObj.speechReply = ollamaResponse || `I noticed your schedule and transit updates. Cab service is currently 11 mins faster. Would you like me to book an Uber Go?`;
+      responseObj.actionCard = {
+        type: 'RIDE_BOOKING',
+        title: '🚕 Book Uber Go',
+        subtitle: `To: ${activeContext.calendar.location} • ETA 3 mins`,
+        price: '₹180',
+        buttonText: 'Confirm & Book Ride',
+        actionData: { service: 'Uber', pickup: activeContext.location, dropoff: activeContext.calendar.location, fare: '₹180' }
       };
-    } else if (textLower.includes('message') || textLower.includes('text') || textLower.includes('tell')) {
-      agentResult = {
-        intent: 'PREPARE_RESPONSIBLE_MESSAGE',
-        reasoning: rawOllamaOutput || `Detected upcoming lecture at ${context.calendar.startTime}. Pre-drafted a polite notification message to your study group.`,
-        action: {
-          id: 'action_send_message',
-          type: 'SEND_MESSAGE',
-          title: '💬 Send Status Update',
-          description: `To: Class Group • "Hey, heading to Campus Hall B now, reach in 15m."`,
-          payload: {
-            recipient: 'Class Group',
-            body: 'Hey, heading to Campus Hall B now, reach in 15m.'
-          }
-        },
-        responsibleAgentNote: 'Pre-filled message draft. Will not send without user verification.',
-        contextUsed: ['Calendar Event', 'Clipboard Context']
-      };
-    } else {
-      agentResult = {
-        intent: 'AUTONOMOUS_TASK_ASSISTANT',
-        reasoning: rawOllamaOutput || `Analyzed prompt: "${promptText}". Checked active schedule and context.`,
-        action: {
-          id: 'action_general_execute',
-          type: 'DISPLAY_RECOMMENDATION',
-          title: '⚡ Apply Smart Recommendation',
-          description: `Execute context-optimized action for: "${promptText}"`,
-          payload: { promptText }
-        },
-        responsibleAgentNote: 'Actionable workflow generated with safety verification step.',
-        contextUsed: ['Active Context', 'User Preferences']
-      };
+      responseObj.contextUsed = ['Calendar Schedule', 'Traffic Alert', 'Location'];
     }
+    // Intent B: Media & Music ("play music", "spotify", "song", "listen to")
+    else if (promptLower.includes('music') || promptLower.includes('spotify') || promptLower.includes('play') || promptLower.includes('song')) {
+      responseObj.intent = 'MEDIA_CONTROL';
+      responseObj.speechReply = ollamaResponse || `Opening Spotify to play your favorite focus playlist!`;
+      responseObj.actionCard = {
+        type: 'MEDIA_PLAYER',
+        title: '🎵 Open Spotify',
+        subtitle: 'Play "Deep Focus AI Playlist"',
+        buttonText: 'Launch & Play Now',
+        actionData: { app: 'Spotify', playlist: 'Deep Focus' }
+      };
+      responseObj.contextUsed = ['User Media Preferences'];
+    }
+    // Intent C: Messaging & Calls ("send message", "whatsapp", "text rahul", "draft email", "call mom")
+    else if (promptLower.includes('message') || promptLower.includes('whatsapp') || promptLower.includes('text') || promptLower.includes('call') || promptLower.includes('email') || promptLower.includes('tell')) {
+      let recipient = 'Contact';
+      const match = prompt.match(/(?:tell|text|message|call)\s+([A-Z][a-z]+|[a-z]+)/i);
+      if (match && match[1]) recipient = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+
+      responseObj.intent = 'SEND_MESSAGE';
+      responseObj.speechReply = ollamaResponse || `I've prepared a draft message for ${recipient}. Tap below to send via WhatsApp.`;
+      responseObj.actionCard = {
+        type: 'MESSAGE_DRAFT',
+        title: `💬 WhatsApp to ${recipient}`,
+        subtitle: `"Hey, heading over now. Talk shortly!"`,
+        buttonText: `Send Message to ${recipient}`,
+        actionData: { recipient, platform: 'WhatsApp', text: 'Hey, heading over now. Talk shortly!' }
+      };
+      responseObj.contextUsed = ['Clipboard', 'Contacts Integration'];
+    }
+    // Intent D: Apps & System Launch ("open camera", "open maps", "directions", "settings", "flashlight", "alarm")
+    else if (promptLower.includes('camera') || promptLower.includes('map') || promptLower.includes('direction') || promptLower.includes('alarm') || promptLower.includes('open') || promptLower.includes('app')) {
+      let targetApp = 'Maps';
+      if (promptLower.includes('camera')) targetApp = 'Camera';
+      if (promptLower.includes('alarm')) targetApp = 'Clock / Alarm';
+      if (promptLower.includes('map') || promptLower.includes('direction')) targetApp = 'Google Maps';
+
+      responseObj.intent = 'LAUNCH_APP';
+      responseObj.speechReply = ollamaResponse || `Opening ${targetApp} for you now.`;
+      responseObj.actionCard = {
+        type: 'SYSTEM_LAUNCH',
+        title: `🚀 Open ${targetApp}`,
+        subtitle: `Launch system app executable`,
+        buttonText: `Launch ${targetApp}`,
+        actionData: { appName: targetApp }
+      };
+      responseObj.contextUsed = ['Device Services'];
+    }
+    // Intent E: Reminders & Notes ("remind me", "take a note", "schedule")
+    else if (promptLower.includes('remind') || promptLower.includes('note') || promptLower.includes('schedule') || promptLower.includes('alarm')) {
+      responseObj.intent = 'CREATE_REMINDER';
+      responseObj.speechReply = ollamaResponse || `I've set up a smart reminder for "${prompt}".`;
+      responseObj.actionCard = {
+        type: 'REMINDER_CARD',
+        title: '⏰ Set System Reminder',
+        subtitle: `Task: ${prompt}`,
+        buttonText: 'Save Reminder',
+        actionData: { task: prompt, time: 'Today 5:00 PM' }
+      };
+      responseObj.contextUsed = ['Calendar API'];
+    }
+    // Intent F: Web Search / Info ("search", "what is", "who is", "weather", "news", "explain")
+    else if (promptLower.includes('search') || promptLower.includes('what') || promptLower.includes('who') || promptLower.includes('weather') || promptLower.includes('explain') || promptLower.includes('how')) {
+      responseObj.intent = 'WEB_SEARCH';
+      responseObj.speechReply = ollamaResponse || `Here is what I found regarding "${prompt}": ContextFlow AI processed this search query.`;
+      responseObj.actionCard = {
+        type: 'INFO_CARD',
+        title: '🔍 AI Web Insight',
+        subtitle: prompt.slice(0, 50),
+        buttonText: 'View Search Details',
+        actionData: { query: prompt }
+      };
+      responseObj.contextUsed = ['Web Engine', 'Ollama LLM'];
+    }
+    // Intent G: General Conversation / Chat with User
+    else {
+      responseObj.intent = 'CONVERSATIONAL_REPLY';
+      responseObj.speechReply = ollamaResponse || `I understand! "${prompt}". Is there anything specific you'd like me to action or set up for you?`;
+      responseObj.actionCard = {
+        type: 'CONVERSATION_SUGGESTION',
+        title: '💡 Suggested Action',
+        subtitle: `Execute smart task for "${prompt.slice(0, 30)}"`,
+        buttonText: 'Run Action Workflow',
+        actionData: { prompt }
+      };
+      responseObj.contextUsed = ['Ollama AI Reasoning'];
+    }
+
+    learningStore.logConversation(prompt, responseObj.speechReply);
 
     res.json({
       success: true,
+      aiEngine: ollamaResponse ? `Ollama (${OLLAMA_MODEL})` : 'ContextFlow Agent',
       timestamp: new Date().toISOString(),
-      aiEngine: rawOllamaOutput ? `Ollama (${OLLAMA_MODEL})` : 'ContextFlow Fast Agent Engine',
-      context,
-      result: agentResult
+      result: responseObj
     });
 
   } catch (err) {
-    console.error('Error in life-assistant:', err);
+    console.error('Server Life Assistant error:', err);
     res.status(500).json({ error: 'Server error', message: err.message });
   }
 });
 
 /**
  * Feedback & Learning Endpoint
- * Flow: Verification -> Learning
  */
 app.post('/api/feedback-learn', (req, res) => {
   try {
-    const { actionId, userChoice, contextCondition } = req.body;
-
-    let learnedRuleText = '';
-    if (actionId === 'action_book_cab' || userChoice === 'BOOK_CAB') {
-      learnedRuleText = 'User prefers Cab when Metro delay > 15 mins';
-    } else if (actionId === 'action_send_message') {
-      learnedRuleText = 'User prefers quick automated status drafts during class commute';
-    } else {
-      learnedRuleText = `User chose ${userChoice || 'custom action'} under condition: ${contextCondition || 'standard'}`;
-    }
-
-    const newRule = learningStore.addLearnedRule(learnedRuleText, contextCondition || 'User Action Choice');
-    learningStore.logDecision({ actionId, userChoice, learnedRule: learnedRuleText });
+    const { actionType, title } = req.body;
+    const ruleText = `User preferred action: "${title || actionType}"`;
+    const newRule = learningStore.addLearnedRule(ruleText, actionType || 'User Choice');
 
     res.json({
       success: true,
-      message: 'Feedback received & AI preference updated!',
+      message: 'Learned preference saved!',
       learnedRule: newRule,
       allRules: learningStore.getLearnedRules()
     });
   } catch (err) {
-    console.error('Error recording learning feedback:', err);
-    res.status(500).json({ error: 'Server error', message: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
 /**
- * Get Active Learned Rules Endpoint
+ * Active Rules Endpoint
  */
 app.get('/api/learning-rules', (req, res) => {
   res.json({
     success: true,
-    rules: learningStore.getLearnedRules(),
-    history: learningStore.getDecisionHistory()
+    rules: learningStore.getLearnedRules()
   });
 });
 
-app.listen(PORT, () => {
+// Bind to 0.0.0.0 so external Wi-Fi devices (e.g. mobile phones on Expo Go) can connect!
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
-  console.log(`🚀 ContextFlow "Operate Your Life" Agent running on port ${PORT}`);
+  console.log(`🚀 ContextFlow Actionable AI Agent Server Running`);
+  console.log(`🌐 Server Port: ${PORT} (Bound to 0.0.0.0 for LAN/Wi-Fi)`);
   console.log(`🤖 Ollama Model Target: ${OLLAMA_MODEL} (${OLLAMA_URL})`);
-  console.log(`📡 Health Check:  http://127.0.0.1:${PORT}/api/health`);
-  console.log(`⚡ Agent Engine:  http://127.0.0.1:${PORT}/api/life-assistant`);
-  console.log(`🧠 Learning API:  http://127.0.0.1:${PORT}/api/feedback-learn`);
+  console.log(`📡 Local Health Check: http://127.0.0.1:${PORT}/api/health`);
+  console.log(`📱 Mobile LAN URL:    http://10.142.79.70:${PORT}/api/life-assistant`);
   console.log(`====================================================`);
 });

@@ -1,45 +1,75 @@
 /**
- * Action Engine - ContextFlow Responsible Agent Execution
- * Executes verified actions and triggers the learning feedback loop.
+ * Universal Action Engine - ContextFlow
+ * Responsible execution of any actionable AI agent decision
  */
 
-export function executeAgentAction(actionObj) {
-  if (!actionObj) return { success: false, message: 'No action specified' };
+export function executeAgentAction(actionCard) {
+  if (!actionCard) return { success: false, title: 'No Action', message: 'No executable action payload found.' };
 
-  switch (actionObj.type) {
-    case 'BOOK_CAB':
+  const type = actionCard.type || 'GENERAL';
+
+  switch (type) {
+    case 'RIDE_BOOKING':
       return {
         success: true,
-        actionType: 'BOOK_CAB',
-        title: '🚕 Cab Confirmed & Dispatching',
-        message: `Uber/Ola Cab booked to Campus Hall B! Driver arriving in 4 mins.`,
-        details: `Saved 11 minutes vs delayed Metro. Estimated Fare: ₹180.`
+        type: 'RIDE_BOOKING',
+        title: '🚕 Uber Dispatch Confirmed',
+        message: 'Uber Go driver assigned & en route to your location.',
+        details: 'ETA: 3 mins • Estimated Fare: ₹180'
       };
 
-    case 'TAKE_METRO':
+    case 'MEDIA_PLAYER':
       return {
         success: true,
-        actionType: 'TAKE_METRO',
-        title: '🚇 Metro Station Route Navigation Active',
-        message: `Navigating to Sector 62 Metro Station.`,
-        details: `Expected arrival at Campus: 10:15 AM (15 mins late).`
+        type: 'MEDIA_PLAYER',
+        title: '🎵 Spotify Player Opened',
+        message: 'Launching Spotify and playing recommended playlist.',
+        details: 'Playing: "Deep Focus AI Playlist"'
       };
 
-    case 'SEND_MESSAGE':
+    case 'MESSAGE_DRAFT':
       return {
         success: true,
-        actionType: 'SEND_MESSAGE',
-        title: '💬 Status Update Message Sent',
-        message: `Message sent to Class Group!`,
-        details: `Body: "Hey, heading to Campus Hall B now, reach in 15m."`
+        type: 'MESSAGE_DRAFT',
+        title: '💬 WhatsApp Message Sent',
+        message: 'Message delivered to contact.',
+        details: 'Text: "Hey, heading over now. Talk shortly!"'
+      };
+
+    case 'SYSTEM_LAUNCH':
+      return {
+        success: true,
+        type: 'SYSTEM_LAUNCH',
+        title: '🚀 Application Launched',
+        message: `Successfully launched target application.`,
+        details: `App: ${actionCard.title || 'System App'}`
+      };
+
+    case 'REMINDER_CARD':
+      return {
+        success: true,
+        type: 'REMINDER_CARD',
+        title: '⏰ Smart Reminder Saved',
+        message: 'Scheduled reminder in system clock.',
+        details: actionCard.subtitle || 'Reminder set.'
+      };
+
+    case 'INFO_CARD':
+      return {
+        success: true,
+        type: 'INFO_CARD',
+        title: '🔍 Web Insight Loaded',
+        message: 'Opened full research details.',
+        details: actionCard.subtitle || 'Query processed.'
       };
 
     default:
       return {
         success: true,
-        actionType: 'GENERAL_ACTION',
+        type: 'GENERAL_ACTION',
         title: '⚡ Action Executed',
-        message: `Executed action: ${actionObj.title || 'Custom task'}`
+        message: `Executed: ${actionCard.title || 'Task action'}`,
+        details: actionCard.subtitle || 'Completed successfully.'
       };
   }
 }

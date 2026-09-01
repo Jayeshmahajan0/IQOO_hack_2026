@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { registerRootComponent } from 'expo';
 import {
   StyleSheet,
@@ -11,313 +11,389 @@ import {
   StatusBar,
   ActivityIndicator,
   Modal,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import {
   checkServerHealth,
   processLifeAssistant,
   submitLearningFeedback,
   fetchLearningRules,
+  getServerUrl,
+  setServerUrl,
 } from './src/services/apiService';
 import { getFusedContext } from './src/services/contextService';
 import { executeAgentAction } from './src/services/actionEngine';
 
 export default function App() {
   const [serverOnline, setServerOnline] = useState(false);
-  const [ollamaInfo, setOllamaInfo] = useState({ status: 'checking', targetModel: 'llama3.2:1b' });
-  const [promptText, setPromptText] = useState("I'm getting late for college");
+  const [ollamaStatus, setOllamaStatus] = useState('checking');
+  const [serverIpInput, setServerIpInput] = useState(getServerUrl());
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  // Chat & Conversation Feed State
+  const [messages, setMessages] = useState([
+    {
+      id: 'welcome_1',
+      sender: 'assistant',
+      text: "Hello! I'm ContextFlow, your autonomous AI assistant. Tell me what you'd like to do, book, or set up today.",
+      timestamp: 'Just now',
+      actionCard: null,
+    },
+  ]);
+  const [inputText, setInputText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
   const [loading, setLoading] = useState(false);
-  
-  // Agent state
-  const [agentResult, setAgentResult] = useState(null);
-  const [actionLog, setActionLog] = useState(null);
-  const [learningNotice, setLearningNotice] = useState(null);
-  const [learnedRules, setLearnedRules] = useState([]);
-  const [showRulesModal, setShowRulesModal] = useState(false);
 
-  // Fused context state
+  // Active context & memory state
   const contextData = getFusedContext();
+  const [learnedRules, setLearnedRules] = useState([]);
+  const [showMemoryModal, setShowMemoryModal] = useState(false);
+  const [toastNotice, setToastNotice] = useState(null);
+
+  const scrollViewRef = useRef(null);
 
   useEffect(() => {
-    async function initServer() {
-      const health = await checkServerHealth();
-      setServerOnline(health.online);
-      if (health.ollama) {
-        setOllamaInfo(health.ollama);
-      }
-
-      const rulesRes = await fetchLearningRules();
-      if (rulesRes.rules) {
-        setLearnedRules(rulesRes.rules);
-      }
-    }
-    initServer();
+    initApp();
   }, []);
 
-  const handleRunAgent = async (textToRun = promptText) => {
-    if (!textToRun.trim()) return;
-    setLoading(true);
-    setActionLog(null);
-    setLearningNotice(null);
+  const initApp = async (targetUrl = getServerUrl()) => {
+    const health = await checkServerHealth(targetUrl);
+    setServerOnline(health.online);
+    if (health.ollama) {
+      setOllamaStatus(health.ollama.status === 'online' ? 'llama3.2:1b Online' : 'Local AI Active');
+    }
+    const rulesRes = await fetchLearningRules(targetUrl);
+    if (rulesRes && rulesRes.rules) {
+      setLearnedRules(rulesRes.rules);
+    }
+  };
 
-    const response = await processLifeAssistant(textToRun, contextData);
+  const handleSaveSettings = () => {
+    setServerUrl(serverIpInput);
+    setShowSettingsModal(false);
+    initApp(serverIpInput);
+  };
+
+  const handleSendMessage = async (textToSend = inputText) => {
+    const text = textToSend.trim();
+    if (!text) return;
+
+    // 1. Add User message to chat feed
+    const userMsg = {
+      id: `usr_${Date.now()}`,
+      sender: 'user',
+      text,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    setMessages((prev) => [...prev, userMsg]);
+    setInputText('');
+    setLoading(true);
+
+    // Scroll to bottom
+    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
+
+    // 2. Query AI Agent
+    const res = await processLifeAssistant(text, contextData);
     setLoading(false);
 
-    if (response && response.result) {
-      setAgentResult(response.result);
+    if (res && res.result) {
+      const assistantMsg = {
+        id: `ai_${Date.now()}`,
+        sender: 'assistant',
+        text: res.result.speechReply || 'Processed your request.',
+        intent: res.result.intent,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        actionCard: res.result.actionCard,
+        contextUsed: res.result.contextUsed,
+      };
+
+      setMessages((prev) => [...prev, assistantMsg]);
+      setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 150);
     }
   };
 
-  const handleChooseAction = async (actionObj, choiceType) => {
-    if (!actionObj) return;
+  const handleExecuteAction = async (msgId, actionCard) => {
+    if (!actionCard) return;
 
-    // 1. Execute action safely
-    const log = executeAgentAction(actionObj);
-    setActionLog(log);
+    // Execute client action
+    const execution = executeAgentAction(actionCard);
 
-    // 2. Trigger Verification -> Learning loop
-    const feedback = await submitLearningFeedback(
-      actionObj.id || choiceType,
-      choiceType,
-      'Metro delay 20 mins'
+    // Update message state with confirmation badge
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === msgId
+          ? {
+              ...m,
+              executed: true,
+              executionDetails: execution,
+            }
+          : m
+      )
     );
 
+    // Submit learning feedback
+    const feedback = await submitLearningFeedback(actionCard.type, actionCard.title);
     if (feedback && feedback.learnedRule) {
-      setLearningNotice(feedback.learnedRule.rule || feedback.message);
-      // Refresh learned rules list
-      const updatedRules = await fetchLearningRules();
-      if (updatedRules.rules) setLearnedRules(updatedRules.rules);
+      setToastNotice(feedback.learnedRule.rule || 'Preference saved to AI memory!');
+      setTimeout(() => setToastNotice(null), 4000);
+
+      const rulesRes = await fetchLearningRules();
+      if (rulesRes && rulesRes.rules) setLearnedRules(rulesRes.rules);
     }
   };
 
-  const quickScenarios = [
-    "I'm getting late for college",
-    "Pre-draft status update to study group",
-    "Check commute & traffic updates",
+  const quickActionDock = [
+    { label: '🚕 Book Ride', prompt: 'I need a ride, book cab' },
+    { label: '🎵 Play Music', prompt: 'Play focus music on Spotify' },
+    { label: '📅 My Schedule', prompt: 'What is on my schedule today?' },
+    { label: '💬 Text Contact', prompt: 'Draft a message to Rahul' },
+    { label: '⏰ Set Alarm', prompt: 'Set an alarm for 7 AM' },
   ];
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="#090d16" />
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        
-        {/* Header with Server & Ollama llama3.2:1b status */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.appTitle}>ContextFlow</Text>
-            <Text style={styles.appTagline}>Autonomous Life Assistant</Text>
-          </View>
-          <View style={styles.statusGroup}>
-            <View style={[styles.badge, serverOnline ? styles.badgeOnline : styles.badgeOffline]}>
-              <View style={[styles.dot, serverOnline ? styles.dotOnline : styles.dotOffline]} />
-              <Text style={styles.badgeText}>{serverOnline ? 'Server: 127.0.0.1' : 'Offline'}</Text>
-            </View>
-            <View style={[styles.badge, styles.badgeOllama]}>
-              <Text style={styles.badgeText}>🦙 {ollamaInfo.targetModel || 'llama3.2:1b'}</Text>
-            </View>
-          </View>
+
+      {/* Top Navigation Bar */}
+      <View style={styles.topBar}>
+        <View>
+          <Text style={styles.brandTitle}>ContextFlow</Text>
+          <Text style={styles.brandSub}>Actionable AI Assistant</Text>
         </View>
 
-        {/* Fused Context Drawer */}
-        <View style={styles.card}>
-          <View style={styles.cardHeaderBetween}>
-            <View style={styles.rowAlign}>
-              <Text style={styles.cardIcon}>🌐</Text>
-              <Text style={styles.cardTitle}>Fused Multi-Modal Context</Text>
-            </View>
-            <TouchableOpacity onPress={() => setShowRulesModal(true)}>
-              <Text style={styles.memoryLink}>🧠 Learning Memory ({learnedRules.length})</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.contextGrid}>
-            <View style={styles.contextBox}>
-              <Text style={styles.contextBoxLabel}>📍 Location</Text>
-              <Text style={styles.contextBoxValue}>{contextData.location}</Text>
-            </View>
-            <View style={styles.contextBox}>
-              <Text style={styles.contextBoxLabel}>📅 Calendar Event</Text>
-              <Text style={styles.contextBoxValue}>
-                {contextData.calendar.event} @ {contextData.calendar.startTime}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.contextGrid}>
-            <View style={styles.contextBox}>
-              <Text style={styles.contextBoxLabel}>🚦 Traffic Alert</Text>
-              <Text style={[styles.contextBoxValue, styles.warningText]}>
-                {contextData.traffic.metroStatus}
-              </Text>
-            </View>
-            <View style={styles.contextBox}>
-              <Text style={styles.contextBoxLabel}>📋 Clipboard Context</Text>
-              <Text style={styles.contextBoxValue} numberOfLines={1}>
-                "{contextData.clipboard}"
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Prompt & Voice Action Bar */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardIcon}>🎙️</Text>
-            <Text style={styles.cardTitle}>Voice & Text Trigger</Text>
-          </View>
-
-          <View style={styles.micContainer}>
-            <TouchableOpacity
-              style={[styles.micButton, isRecording && styles.micButtonActive]}
-              onPress={() => {
-                setIsRecording(!isRecording);
-                if (!isRecording) {
-                  setPromptText("I'm getting late for college");
-                }
-              }}
-            >
-              <Text style={styles.micIcon}>{isRecording ? '⏹️' : '🎙️'}</Text>
-            </TouchableOpacity>
-            <Text style={styles.micStateText}>
-              {isRecording ? 'Listening for voice prompt...' : 'Tap mic or select hackathon scenario'}
-            </Text>
-          </View>
-
-          <TextInput
-            style={styles.textInput}
-            value={promptText}
-            onChangeText={setPromptText}
-            placeholder="Tell ContextFlow what's happening..."
-            placeholderTextColor="#64748b"
-          />
-
-          <View style={styles.presetContainer}>
-            {quickScenarios.map((sc, idx) => (
-              <TouchableOpacity
-                key={idx}
-                style={styles.presetChip}
-                onPress={() => {
-                  setPromptText(sc);
-                  handleRunAgent(sc);
-                }}
-              >
-                <Text style={styles.presetText}>{sc}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
+        <View style={styles.topRightControls}>
+          {/* Status Badge */}
           <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={() => handleRunAgent()}
-            disabled={loading}
+            style={[styles.statusBadge, serverOnline ? styles.statusBadgeOnline : styles.statusBadgeOffline]}
+            onPress={() => setShowSettingsModal(true)}
           >
-            {loading ? (
-              <ActivityIndicator color="#ffffff" />
-            ) : (
-              <Text style={styles.primaryButtonText}>⚡ Run Autonomous Life Loop</Text>
-            )}
+            <View style={[styles.statusDot, serverOnline ? styles.dotGreen : styles.dotAmber]} />
+            <Text style={styles.statusText}>
+              {serverOnline ? 'Connected' : 'Offline'}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Settings Button */}
+          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowSettingsModal(true)}>
+            <Text style={styles.iconBtnText}>⚙️</Text>
           </TouchableOpacity>
         </View>
+      </View>
 
-        {/* AI Intent & Action Card */}
-        {agentResult && (
-          <View style={[styles.card, styles.agentCard]}>
-            <View style={styles.cardHeaderBetween}>
-              <View style={styles.rowAlign}>
-                <Text style={styles.cardIcon}>🤖</Text>
-                <Text style={styles.cardTitle}>Agent Recommendation</Text>
+      {/* Minimalist Context Bar */}
+      <View style={styles.contextBar}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.contextBarScroll}>
+          <TouchableOpacity style={styles.contextChip} onPress={() => setShowMemoryModal(true)}>
+            <Text style={styles.contextChipText}>🧠 Memory: {learnedRules.length} Rules</Text>
+          </TouchableOpacity>
+          <View style={styles.contextChip}>
+            <Text style={styles.contextChipText}>📍 {contextData.location.slice(0, 18)}...</Text>
+          </View>
+          <View style={styles.contextChip}>
+            <Text style={styles.contextChipText}>📅 Next: {contextData.calendar.event}</Text>
+          </View>
+          <View style={styles.contextChip}>
+            <Text style={styles.contextChipText}>🤖 {ollamaStatus}</Text>
+          </View>
+        </ScrollView>
+      </View>
+
+      {/* Floating Learning Toast Notice */}
+      {toastNotice && (
+        <View style={styles.toastCard}>
+          <Text style={styles.toastTitle}>✨ Preference Learned</Text>
+          <Text style={styles.toastText}>{toastNotice}</Text>
+        </View>
+      )}
+
+      {/* Chat Feed */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.chatScroll}
+          contentContainerStyle={styles.chatContent}
+        >
+          {messages.map((msg) => (
+            <View
+              key={msg.id}
+              style={[
+                styles.messageRow,
+                msg.sender === 'user' ? styles.userRow : styles.assistantRow,
+              ]}
+            >
+              {/* Avatar Icon */}
+              {msg.sender === 'assistant' && (
+                <View style={styles.aiAvatar}>
+                  <Text style={styles.aiAvatarText}>⚡</Text>
+                </View>
+              )}
+
+              <View
+                style={[
+                  styles.bubble,
+                  msg.sender === 'user' ? styles.userBubble : styles.assistantBubble,
+                ]}
+              >
+                {/* Speech Reply */}
+                <Text style={styles.bubbleText}>{msg.text}</Text>
+                <Text style={styles.timestampText}>{msg.timestamp}</Text>
+
+                {/* Executable Action Card */}
+                {msg.actionCard && (
+                  <View style={styles.actionCardContainer}>
+                    <View style={styles.actionCardHeader}>
+                      <Text style={styles.actionCardTitle}>{msg.actionCard.title}</Text>
+                      {msg.actionCard.price && (
+                        <Text style={styles.actionCardPrice}>{msg.actionCard.price}</Text>
+                      )}
+                    </View>
+
+                    {msg.actionCard.subtitle && (
+                      <Text style={styles.actionCardSubtitle}>{msg.actionCard.subtitle}</Text>
+                    )}
+
+                    {!msg.executed ? (
+                      <TouchableOpacity
+                        style={styles.executeButton}
+                        onPress={() => handleExecuteAction(msg.id, msg.actionCard)}
+                      >
+                        <Text style={styles.executeButtonText}>
+                          ▶ {msg.actionCard.buttonText || 'Execute Action'}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <View style={styles.executedBanner}>
+                        <Text style={styles.executedBannerText}>
+                          ✓ {msg.executionDetails?.title || 'Action Completed'}
+                        </Text>
+                        <Text style={styles.executedSubtext}>
+                          {msg.executionDetails?.message}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
-              <Text style={styles.intentTag}>{agentResult.intent}</Text>
             </View>
+          ))}
 
-            {/* Reasoning text */}
-            <Text style={styles.reasoningText}>{agentResult.reasoning}</Text>
-
-            {/* Responsible Agent Notice */}
-            <View style={styles.responsibleNoticeBox}>
-              <Text style={styles.responsibleNoticeTitle}>🛡️ Responsible Agent Safeguard</Text>
-              <Text style={styles.responsibleNoticeText}>
-                {agentResult.responsibleAgentNote}
-              </Text>
+          {loading && (
+            <View style={[styles.messageRow, styles.assistantRow]}>
+              <View style={styles.aiAvatar}>
+                <ActivityIndicator size="small" color="#6366f1" />
+              </View>
+              <View style={[styles.bubble, styles.assistantBubble, styles.loadingBubble]}>
+                <Text style={styles.loadingText}>ContextFlow is reasoning...</Text>
+              </View>
             </View>
+          )}
+        </ScrollView>
 
-            {/* Context used tags */}
-            <View style={styles.contextTagsRow}>
-              {agentResult.contextUsed && agentResult.contextUsed.map((ctx, i) => (
-                <Text key={i} style={styles.contextTag}>• {ctx}</Text>
-              ))}
-            </View>
+        {/* Quick Action Dock */}
+        <View style={styles.quickDock}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dockScroll}>
+            {quickActionDock.map((item, idx) => (
+              <TouchableOpacity
+                key={idx}
+                style={styles.dockChip}
+                onPress={() => handleSendMessage(item.prompt)}
+              >
+                <Text style={styles.dockChipText}>{item.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
 
-            {/* Action Buttons */}
-            <View style={styles.actionButtonsContainer}>
-              {agentResult.action && (
-                <TouchableOpacity
-                  style={styles.actionButtonPrimary}
-                  onPress={() => handleChooseAction(agentResult.action, 'BOOK_CAB')}
-                >
-                  <Text style={styles.actionButtonPrimaryText}>{agentResult.action.title}</Text>
-                  {agentResult.action.description && (
-                    <Text style={styles.actionButtonSub}>{agentResult.action.description}</Text>
-                  )}
-                </TouchableOpacity>
-              )}
+        {/* Bottom Input Controls */}
+        <View style={styles.inputBar}>
+          <TouchableOpacity
+            style={[styles.micBtn, isRecording && styles.micBtnActive]}
+            onPress={() => {
+              setIsRecording(!isRecording);
+              if (!isRecording) {
+                handleSendMessage("I'm getting late for college, book cab");
+              }
+            }}
+          >
+            <Text style={styles.micBtnIcon}>{isRecording ? '⏹' : '🎙️'}</Text>
+          </TouchableOpacity>
 
-              {agentResult.alternativeAction && (
-                <TouchableOpacity
-                  style={styles.actionButtonSecondary}
-                  onPress={() => handleChooseAction(agentResult.alternativeAction, 'TAKE_METRO')}
-                >
-                  <Text style={styles.actionButtonSecondaryText}>{agentResult.alternativeAction.title}</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-        )}
+          <TextInput
+            style={styles.chatInput}
+            value={inputText}
+            onChangeText={setInputText}
+            placeholder="Ask AI to book, run, message, or talk..."
+            placeholderTextColor="#64748b"
+            onSubmitEditing={() => handleSendMessage()}
+          />
 
-        {/* Action Executed Banner */}
-        {actionLog && (
-          <View style={[styles.card, styles.actionSuccessCard]}>
-            <Text style={styles.actionSuccessHeader}>✅ {actionLog.title || 'Action Confirmed'}</Text>
-            <Text style={styles.actionSuccessMessage}>{actionLog.message}</Text>
-            {actionLog.details && (
-              <Text style={styles.actionSuccessDetails}>{actionLog.details}</Text>
-            )}
-          </View>
-        )}
+          <TouchableOpacity
+            style={styles.sendBtn}
+            onPress={() => handleSendMessage()}
+            disabled={loading}
+          >
+            <Text style={styles.sendBtnIcon}>➔</Text>
+          </TouchableOpacity>
+        </View>
+      </KeyboardAvoidingView>
 
-        {/* Verification & Learning Loop Toast */}
-        {learningNotice && (
-          <View style={[styles.card, styles.learningCard]}>
-            <View style={styles.rowAlign}>
-              <Text style={styles.cardIcon}>🧠</Text>
-              <Text style={styles.learningHeader}>Verification → Learning Loop Updated</Text>
-            </View>
-            <Text style={styles.learningText}>
-              Stored Rule: <Text style={styles.learningRuleHighlight}>"{learningNotice}"</Text>
-            </Text>
-            <Text style={styles.learningSubtext}>
-              Next time this context occurs, ContextFlow will automatically apply your learned preference.
-            </Text>
-          </View>
-        )}
-
-      </ScrollView>
-
-      {/* Learning Memory Modal */}
-      <Modal visible={showRulesModal} animationType="slide" transparent>
+      {/* Settings / IP Config Modal */}
+      <Modal visible={showSettingsModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.cardHeaderBetween}>
-              <Text style={styles.cardTitle}>🧠 Learned User Memory</Text>
-              <TouchableOpacity onPress={() => setShowRulesModal(false)}>
-                <Text style={styles.closeModalText}>✕ Close</Text>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>⚙️ Backend Server Host IP</Text>
+            <Text style={styles.modalDescription}>
+              Enter your PC's local Wi-Fi IP address so your phone can communicate with the Node server over Wi-Fi:
+            </Text>
+
+            <Text style={styles.inputLabel}>Server Host URL:</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={serverIpInput}
+              onChangeText={setServerIpInput}
+              placeholder="e.g. http://10.142.79.70:5000"
+              placeholderTextColor="#64748b"
+              autoCapitalize="none"
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalBtnCancel}
+                onPress={() => setShowSettingsModal(false)}
+              >
+                <Text style={styles.modalBtnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.modalBtnSave}
+                onPress={handleSaveSettings}
+              >
+                <Text style={styles.modalBtnSaveText}>Save & Connect</Text>
               </TouchableOpacity>
             </View>
-            <ScrollView style={styles.modalScroll}>
-              {learnedRules.map((r, i) => (
-                <View key={i} style={styles.ruleItem}>
-                  <Text style={styles.ruleText}>• {r.rule}</Text>
-                  {r.source && <Text style={styles.ruleSource}>{r.source}</Text>}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Learning Memory Modal */}
+      <Modal visible={showMemoryModal} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalBox}>
+            <View style={styles.modalHeaderBetween}>
+              <Text style={styles.modalTitle}>🧠 Learned AI Memory</Text>
+              <TouchableOpacity onPress={() => setShowMemoryModal(false)}>
+                <Text style={styles.closeText}>✕ Close</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.rulesList}>
+              {learnedRules.map((rule, idx) => (
+                <View key={idx} style={styles.ruleCard}>
+                  <Text style={styles.ruleText}>• {rule.rule}</Text>
+                  {rule.source && <Text style={styles.ruleSub}>{rule.source}</Text>}
                 </View>
               ))}
             </ScrollView>
@@ -334,353 +410,399 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#090d16',
   },
-  scrollContent: {
-    padding: 16,
-  },
-  header: {
+  topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
-    marginTop: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
   },
-  appTitle: {
-    fontSize: 24,
+  brandTitle: {
+    fontSize: 22,
     fontWeight: '800',
-    color: '#38bdf8',
+    color: '#6366f1',
     letterSpacing: 0.5,
   },
-  appTagline: {
-    fontSize: 12,
+  brandSub: {
+    fontSize: 11,
     color: '#94a3b8',
-    marginTop: 2,
+    marginTop: 1,
   },
-  statusGroup: {
-    alignItems: 'flex-end',
-  },
-  badge: {
+  topRightControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 4,
+    gap: 8,
   },
-  badgeOnline: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  statusBadgeOnline: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
     borderColor: '#10b981',
   },
-  badgeOffline: {
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+  statusBadgeOffline: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
     borderColor: '#f59e0b',
   },
-  badgeOllama: {
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    borderColor: '#38bdf8',
-  },
-  dot: {
+  statusDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     marginRight: 6,
   },
-  dotOnline: { backgroundColor: '#10b981' },
-  dotOffline: { backgroundColor: '#f59e0b' },
-  badgeText: {
-    fontSize: 10,
+  dotGreen: { backgroundColor: '#10b981' },
+  dotAmber: { backgroundColor: '#f59e0b' },
+  statusText: {
+    fontSize: 11,
     fontWeight: '600',
     color: '#f8fafc',
   },
-  card: {
+  iconBtn: {
+    padding: 6,
     backgroundColor: '#1e293b',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  agentCard: {
-    borderColor: '#38bdf8',
-    backgroundColor: '#0f172a',
-  },
-  actionSuccessCard: {
-    borderColor: '#10b981',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-  },
-  learningCard: {
-    borderColor: '#a855f7',
-    backgroundColor: 'rgba(168, 85, 247, 0.1)',
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  cardHeaderBetween: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  rowAlign: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  cardIcon: {
-    fontSize: 18,
-    marginRight: 8,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#f8fafc',
-  },
-  memoryLink: {
-    fontSize: 12,
-    color: '#a855f7',
-    fontWeight: '600',
-  },
-  contextGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  contextBox: {
-    flex: 1,
-    backgroundColor: '#0f172a',
     borderRadius: 10,
-    padding: 10,
-    marginHorizontal: 3,
+  },
+  iconBtnText: {
+    fontSize: 14,
+  },
+  contextBar: {
+    backgroundColor: '#0f172a',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  contextBarScroll: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  contextChip: {
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#334155',
   },
-  contextBoxLabel: {
-    fontSize: 10,
-    color: '#94a3b8',
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  contextBoxValue: {
-    fontSize: 12,
-    color: '#f8fafc',
-    fontWeight: '500',
-  },
-  warningText: {
-    color: '#f59e0b',
-  },
-  micContainer: {
-    alignItems: 'center',
-    marginVertical: 10,
-  },
-  micButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#0284c7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 4,
-    shadowColor: '#38bdf8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-  },
-  micButtonActive: {
-    backgroundColor: '#ef4444',
-  },
-  micIcon: {
-    fontSize: 26,
-  },
-  micStateText: {
+  contextChipText: {
     fontSize: 11,
     color: '#94a3b8',
-    marginTop: 6,
+    fontWeight: '500',
   },
-  textInput: {
+  toastCard: {
+    backgroundColor: 'rgba(99, 102, 241, 0.95)',
+    marginHorizontal: 16,
+    marginTop: 8,
+    padding: 12,
+    borderRadius: 12,
+    elevation: 4,
+  },
+  toastTitle: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  toastText: {
+    color: '#e0e7ff',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  chatScroll: {
+    flex: 1,
+  },
+  chatContent: {
+    padding: 16,
+    gap: 16,
+  },
+  messageRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 4,
+  },
+  userRow: {
+    justifyContent: 'flex-end',
+  },
+  assistantRow: {
+    justifyContent: 'flex-start',
+  },
+  aiAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#6366f1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+    marginTop: 2,
+  },
+  aiAvatarText: {
+    fontSize: 16,
+    color: '#ffffff',
+  },
+  bubble: {
+    maxWidth: '80%',
+    borderRadius: 18,
+    padding: 14,
+  },
+  userBubble: {
+    backgroundColor: '#4f46e5',
+    borderBottomRightRadius: 4,
+  },
+  assistantBubble: {
+    backgroundColor: '#131b2e',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  loadingBubble: {
+    paddingVertical: 10,
+  },
+  loadingText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontStyle: 'italic',
+  },
+  bubbleText: {
+    color: '#f8fafc',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  timestampText: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.5)',
+    alignSelf: 'flex-end',
+    marginTop: 4,
+  },
+  actionCardContainer: {
+    marginTop: 12,
+    backgroundColor: '#090d16',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#6366f1',
+  },
+  actionCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  actionCardTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#38bdf8',
+  },
+  actionCardPrice: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#10b981',
+  },
+  actionCardSubtitle: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginTop: 4,
+  },
+  executeButton: {
+    marginTop: 10,
+    backgroundColor: '#10b981',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  executeButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  executedBanner: {
+    marginTop: 10,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    padding: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#10b981',
+  },
+  executedBannerText: {
+    color: '#10b981',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  executedSubtext: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  quickDock: {
+    paddingVertical: 6,
+    backgroundColor: '#090d16',
+  },
+  dockScroll: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  dockChip: {
+    backgroundColor: '#131b2e',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  dockChipText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  inputBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     backgroundColor: '#0f172a',
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    gap: 8,
+  },
+  micBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#4f46e5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  micBtnActive: {
+    backgroundColor: '#ef4444',
+  },
+  micBtnIcon: {
+    fontSize: 20,
+  },
+  chatInput: {
+    flex: 1,
+    backgroundColor: '#131b2e',
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    color: '#f8fafc',
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#10b981',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  sendBtnIcon: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalBox: {
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#6366f1',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#f8fafc',
+    marginBottom: 8,
+  },
+  modalDescription: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginBottom: 14,
+    lineHeight: 18,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#cbd5e1',
+    marginBottom: 6,
+  },
+  modalInput: {
+    backgroundColor: '#131b2e',
     borderRadius: 10,
     padding: 12,
     color: '#f8fafc',
     fontSize: 14,
     borderWidth: 1,
     borderColor: '#334155',
-    marginBottom: 10,
+    marginBottom: 16,
   },
-  presetContainer: {
+  modalActions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: 12,
+    justifyContent: 'flex-end',
+    gap: 10,
   },
-  presetChip: {
-    backgroundColor: '#334155',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
-    marginRight: 6,
-    marginBottom: 6,
-  },
-  presetText: {
-    fontSize: 11,
-    color: '#e2e8f0',
-  },
-  primaryButton: {
-    backgroundColor: '#0284c7',
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  primaryButtonText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  intentTag: {
-    backgroundColor: 'rgba(56, 189, 248, 0.2)',
-    color: '#38bdf8',
-    fontSize: 10,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  reasoningText: {
-    fontSize: 13,
-    color: '#e2e8f0',
-    lineHeight: 19,
-    marginBottom: 12,
-  },
-  responsibleNoticeBox: {
-    backgroundColor: '#1e293b',
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: '#10b981',
-  },
-  responsibleNoticeTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#10b981',
-    marginBottom: 2,
-  },
-  responsibleNoticeText: {
-    fontSize: 11,
-    color: '#94a3b8',
-  },
-  contextTagsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: 14,
-  },
-  contextTag: {
-    fontSize: 10,
-    color: '#64748b',
-    marginRight: 10,
-  },
-  actionButtonsContainer: {
-    gap: 8,
-  },
-  actionButtonPrimary: {
-    backgroundColor: '#10b981',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-  },
-  actionButtonPrimaryText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  actionButtonSub: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 11,
-    marginTop: 2,
-  },
-  actionButtonSecondary: {
-    backgroundColor: '#334155',
+  modalBtnCancel: {
     paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    alignItems: 'center',
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
   },
-  actionButtonSecondaryText: {
-    color: '#e2e8f0',
-    fontSize: 12,
+  modalBtnCancelText: {
+    color: '#94a3b8',
     fontWeight: '600',
   },
-  actionSuccessHeader: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#10b981',
-    marginBottom: 4,
+  modalBtnSave: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    backgroundColor: '#6366f1',
   },
-  actionSuccessMessage: {
-    fontSize: 13,
-    color: '#f8fafc',
-    marginBottom: 2,
-  },
-  actionSuccessDetails: {
-    fontSize: 11,
-    color: '#94a3b8',
-  },
-  learningHeader: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#c084fc',
-  },
-  learningText: {
-    fontSize: 12,
-    color: '#e2e8f0',
-    marginTop: 4,
-  },
-  learningRuleHighlight: {
-    color: '#a855f7',
+  modalBtnSaveText: {
+    color: '#ffffff',
     fontWeight: '700',
   },
-  learningSubtext: {
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 4,
-    fontStyle: 'italic',
+  modalHeaderBetween: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: '#0f172a',
-    borderRadius: 16,
-    padding: 20,
-    maxHeight: '70%',
-    borderWidth: 1,
-    borderColor: '#38bdf8',
-  },
-  closeModalText: {
+  closeText: {
     color: '#ef4444',
     fontWeight: '700',
     fontSize: 13,
   },
-  modalScroll: {
-    marginTop: 10,
+  rulesList: {
+    maxHeight: 280,
   },
-  ruleItem: {
-    backgroundColor: '#1e293b',
-    borderRadius: 8,
-    padding: 10,
+  ruleCard: {
+    backgroundColor: '#131b2e',
+    padding: 12,
+    borderRadius: 10,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1e293b',
   },
   ruleText: {
-    fontSize: 12,
     color: '#f8fafc',
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '500',
   },
-  ruleSource: {
-    fontSize: 10,
+  ruleSub: {
     color: '#94a3b8',
-    marginTop: 2,
+    fontSize: 11,
+    marginTop: 4,
   },
 });
 
