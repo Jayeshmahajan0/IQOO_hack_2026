@@ -109,6 +109,13 @@ export default function App() {
 
       setMessages((prev) => [...prev, assistantMsg]);
       setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 150);
+
+      // AUTOMATIC DIRECT ACTION EXECUTION - Directly perform action without asking user for confirmation
+      if (res.result.actionCard) {
+        setTimeout(() => {
+          handleExecuteAction(assistantMsg.id, res.result.actionCard);
+        }, 500);
+      }
     }
   };
 
