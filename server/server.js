@@ -62,7 +62,7 @@ async function queryOllama(promptText, systemPrompt) {
 
     if (!response.ok) return null;
     const data = await response.json();
-    return data.response;
+    return data.response ? data.response.trim() : null;
   } catch (err) {
     console.log(`Ollama query note: ${err.message}`);
     return null;
@@ -71,7 +71,7 @@ async function queryOllama(promptText, systemPrompt) {
 
 /**
  * Universal Actionable AI Agent Endpoint
- * Handles ANY user prompt & returns natural response + executable Action Card
+ * Returns natural, human-like speech + dynamic matched Action Cards
  */
 app.post('/api/life-assistant', async (req, res) => {
   try {
@@ -85,123 +85,146 @@ app.post('/api/life-assistant', async (req, res) => {
     };
     const rules = learningStore.getLearnedRules();
 
-    const systemPrompt = `You are ContextFlow, a friendly, intelligent, and proactive AI Assistant.
-User context: Location: ${activeContext.location}, Schedule: ${activeContext.calendar.event} at ${activeContext.calendar.time}.
-Learned user preferences: ${rules.map(r => r.rule).join('; ')}.
-
-Be helpful, concise, and natural.`;
+    // Clean, high-impression system prompt for Ollama:
+    // DO NOT awkwardly repeat "Sector 62" or location unless specifically asked!
+    const systemPrompt = `You are ContextFlow, a highly intelligent, natural, and helpful AI assistant.
+Rules for your response:
+1. Speak naturally like a modern AI assistant (e.g. Siri/Google Assistant/ChatGPT).
+2. NEVER repeat street names, city sectors, or addresses (like "Sector 62") unless the user explicitly asks for location, navigation, or directions!
+3. Be direct, polite, and helpful. Do not give robotic or repetitive responses.
+4. Active Learned Preferences: ${rules.map(r => r.rule).join('; ')}.`;
 
     // 1. Get reasoning from Ollama model
-    const ollamaResponse = await queryOllama(prompt, systemPrompt);
+    let ollamaResponse = await queryOllama(prompt, systemPrompt);
 
-    // 2. Classify intent & build actionable payload for ANY user query
+    // Clean up any stray location references if Ollama hallucinated them
+    if (ollamaResponse && !promptLower.includes('location') && !promptLower.includes('where')) {
+      ollamaResponse = ollamaResponse.replace(/,?\s*Sector\s*62,?\s*/gi, ' ').replace(/\s+/g, ' ').trim();
+    }
+
     let responseObj = {
-      intent: 'GENERAL_ASSISTANT',
-      speechReply: ollamaResponse || `I'm here to help! How can I assist you today?`,
+      intent: 'CONVERSATIONAL_REPLY',
+      speechReply: ollamaResponse || `I'm here to help! What would you like to do?`,
       actionCard: null,
-      contextUsed: ['Active Location', 'Preferences']
+      contextUsed: ['AI Reasoning Engine']
     };
 
-    // Intent A: Rides & Commute ("book cab", "uber", "late for college", "ride to airport", "metro")
-    if (promptLower.includes('cab') || promptLower.includes('uber') || promptLower.includes('late') || promptLower.includes('ride') || promptLower.includes('commute') || promptLower.includes('college')) {
+    // --- DYNAMIC INTENT CLASSIFICATION & MATCHED ACTION CARDS ---
+
+    // 1. ALARMS & CLOCKS ("set alarm for 7 am", "wake me up", "timer")
+    if (promptLower.includes('alarm') || promptLower.includes('wake me') || promptLower.includes('timer')) {
+      let timeMatch = prompt.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+      let timeStr = timeMatch ? timeMatch[1].toUpperCase() : '7:00 AM';
+
+      responseObj.intent = 'SET_ALARM';
+      responseObj.speechReply = ollamaResponse || `I've set an alarm for ${timeStr}. Sleep well!`;
+      responseObj.actionCard = {
+        type: 'SYSTEM_LAUNCH',
+        title: `⏰ Alarm Set for ${timeStr}`,
+        subtitle: `Alarm enabled in System Clock app • Repeats daily`,
+        buttonText: `Open Clock & Alarm`,
+        actionData: { appName: 'Clock', time: timeStr }
+      };
+      responseObj.contextUsed = ['Device Clock Service'];
+    }
+    // 2. MESSAGING & WHATSAPP ("send message to rahul", "text rahul", "whatsapp", "tell him", "draft email")
+    else if (promptLower.includes('message') || promptLower.includes('whatsapp') || promptLower.includes('text') || promptLower.includes('tell') || promptLower.includes('draft') || promptLower.includes('email')) {
+      let recipient = 'Contact';
+      const match = prompt.match(/(?:tell|text|message|send\s+message\s+to|send\s+to|send)\s+([A-Z][a-z]+|[a-z]+)/i);
+      if (match && match[1]) {
+        let candidate = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+        if (!['Message', 'Text', 'The', 'A', 'Him', 'Her', 'Me', 'My'].includes(candidate)) {
+          recipient = candidate;
+        }
+      }
+      // Check for "to [Name]" pattern
+      const toMatch = prompt.match(/to\s+([A-Z][a-z]+|[a-z]+)/i);
+      if (toMatch && toMatch[1]) {
+        let candidate = toMatch[1].charAt(0).toUpperCase() + toMatch[1].slice(1);
+        if (!['The', 'A', 'Him', 'Her', 'Me', 'My'].includes(candidate)) {
+          recipient = candidate;
+        }
+      }
+
+      let messageBody = "Hey, checking in!";
+      if (promptLower.includes('late')) messageBody = "Hey, running a few minutes late. Reach soon!";
+      if (promptLower.includes('lecture') || promptLower.includes('class')) messageBody = "Hey, heading to class now!";
+
+      responseObj.intent = 'SEND_MESSAGE';
+      responseObj.speechReply = ollamaResponse || `I've prepared a draft message for ${recipient}: "${messageBody}". Tap below to send via WhatsApp.`;
+      responseObj.actionCard = {
+        type: 'MESSAGE_DRAFT',
+        title: `💬 Send WhatsApp to ${recipient}`,
+        subtitle: `Body: "${messageBody}"`,
+        buttonText: `Send Message to ${recipient}`,
+        actionData: { recipient, text: messageBody, platform: 'WhatsApp' }
+      };
+      responseObj.contextUsed = ['Contacts Service', 'WhatsApp API'];
+    }
+    // 3. RIDES & COMMUTE (ONLY when user explicitly mentions cab, uber, ride, transport, or travel)
+    else if (promptLower.includes('cab') || promptLower.includes('uber') || promptLower.includes('ride') || promptLower.includes('ola') || promptLower.includes('taxi') || promptLower.includes('commute')) {
       responseObj.intent = 'BOOK_RIDE';
-      responseObj.speechReply = ollamaResponse || `I noticed your schedule and transit updates. Cab service is currently 11 mins faster. Would you like me to book an Uber Go?`;
+      responseObj.speechReply = ollamaResponse || `Uber Go is available nearby with an estimated arrival in 3 mins. Would you like me to confirm your ride?`;
       responseObj.actionCard = {
         type: 'RIDE_BOOKING',
         title: '🚕 Book Uber Go',
-        subtitle: `To: ${activeContext.calendar.location} • ETA 3 mins`,
+        subtitle: `Destination: ${activeContext.calendar.location} • Fare: ₹180`,
         price: '₹180',
-        buttonText: 'Confirm & Book Ride',
-        actionData: { service: 'Uber', pickup: activeContext.location, dropoff: activeContext.calendar.location, fare: '₹180' }
+        buttonText: 'Confirm & Book Uber',
+        actionData: { service: 'Uber', fare: '₹180' }
       };
-      responseObj.contextUsed = ['Calendar Schedule', 'Traffic Alert', 'Location'];
+      responseObj.contextUsed = ['Uber Mobility Service', 'Transit API'];
     }
-    // Intent B: Media & Music ("play music", "spotify", "song", "listen to")
-    else if (promptLower.includes('music') || promptLower.includes('spotify') || promptLower.includes('play') || promptLower.includes('song')) {
+    // 4. MUSIC & SPOTIFY ("play music", "spotify", "song", "playlist")
+    else if (promptLower.includes('music') || promptLower.includes('spotify') || promptLower.includes('song') || promptLower.includes('playlist')) {
       responseObj.intent = 'MEDIA_CONTROL';
-      responseObj.speechReply = ollamaResponse || `Opening Spotify to play your favorite focus playlist!`;
+      responseObj.speechReply = ollamaResponse || `Opening Spotify to play your focus playlist!`;
       responseObj.actionCard = {
         type: 'MEDIA_PLAYER',
         title: '🎵 Open Spotify',
         subtitle: 'Play "Deep Focus AI Playlist"',
-        buttonText: 'Launch & Play Now',
-        actionData: { app: 'Spotify', playlist: 'Deep Focus' }
+        buttonText: 'Launch Spotify & Play',
+        actionData: { app: 'Spotify' }
       };
-      responseObj.contextUsed = ['User Media Preferences'];
+      responseObj.contextUsed = ['Spotify Audio Engine'];
     }
-    // Intent C: Messaging & Calls ("send message", "whatsapp", "text rahul", "draft email", "call mom")
-    else if (promptLower.includes('message') || promptLower.includes('whatsapp') || promptLower.includes('text') || promptLower.includes('call') || promptLower.includes('email') || promptLower.includes('tell')) {
-      let recipient = 'Contact';
-      const match = prompt.match(/(?:tell|text|message|call)\s+([A-Z][a-z]+|[a-z]+)/i);
-      if (match && match[1]) recipient = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-
-      responseObj.intent = 'SEND_MESSAGE';
-      responseObj.speechReply = ollamaResponse || `I've prepared a draft message for ${recipient}. Tap below to send via WhatsApp.`;
-      responseObj.actionCard = {
-        type: 'MESSAGE_DRAFT',
-        title: `💬 WhatsApp to ${recipient}`,
-        subtitle: `"Hey, heading over now. Talk shortly!"`,
-        buttonText: `Send Message to ${recipient}`,
-        actionData: { recipient, platform: 'WhatsApp', text: 'Hey, heading over now. Talk shortly!' }
-      };
-      responseObj.contextUsed = ['Clipboard', 'Contacts Integration'];
-    }
-    // Intent D: Apps & System Launch ("open camera", "open maps", "directions", "settings", "flashlight", "alarm")
-    else if (promptLower.includes('camera') || promptLower.includes('map') || promptLower.includes('direction') || promptLower.includes('alarm') || promptLower.includes('open') || promptLower.includes('app')) {
+    // 5. APPS & MAPS ("open camera", "open maps", "directions", "settings", "browser")
+    else if (promptLower.includes('camera') || promptLower.includes('map') || promptLower.includes('direction') || promptLower.includes('open') || promptLower.includes('app')) {
       let targetApp = 'Maps';
       if (promptLower.includes('camera')) targetApp = 'Camera';
-      if (promptLower.includes('alarm')) targetApp = 'Clock / Alarm';
       if (promptLower.includes('map') || promptLower.includes('direction')) targetApp = 'Google Maps';
+      if (promptLower.includes('browser') || promptLower.includes('chrome')) targetApp = 'Browser';
 
       responseObj.intent = 'LAUNCH_APP';
       responseObj.speechReply = ollamaResponse || `Opening ${targetApp} for you now.`;
       responseObj.actionCard = {
         type: 'SYSTEM_LAUNCH',
         title: `🚀 Open ${targetApp}`,
-        subtitle: `Launch system app executable`,
+        subtitle: `Launch system executable`,
         buttonText: `Launch ${targetApp}`,
         actionData: { appName: targetApp }
       };
-      responseObj.contextUsed = ['Device Services'];
+      responseObj.contextUsed = ['System Launcher'];
     }
-    // Intent E: Reminders & Notes ("remind me", "take a note", "schedule")
-    else if (promptLower.includes('remind') || promptLower.includes('note') || promptLower.includes('schedule') || promptLower.includes('alarm')) {
+    // 6. REMINDERS & NOTES ("remind me", "take a note", "save this")
+    else if (promptLower.includes('remind') || promptLower.includes('note') || promptLower.includes('todo')) {
       responseObj.intent = 'CREATE_REMINDER';
-      responseObj.speechReply = ollamaResponse || `I've set up a smart reminder for "${prompt}".`;
+      responseObj.speechReply = ollamaResponse || `Saved a reminder for "${prompt}".`;
       responseObj.actionCard = {
         type: 'REMINDER_CARD',
-        title: '⏰ Set System Reminder',
-        subtitle: `Task: ${prompt}`,
-        buttonText: 'Save Reminder',
-        actionData: { task: prompt, time: 'Today 5:00 PM' }
+        title: '📝 Save Reminder',
+        subtitle: `Note: ${prompt}`,
+        buttonText: 'Save to System Reminders',
+        actionData: { task: prompt }
       };
-      responseObj.contextUsed = ['Calendar API'];
+      responseObj.contextUsed = ['System Notes'];
     }
-    // Intent F: Web Search / Info ("search", "what is", "who is", "weather", "news", "explain")
-    else if (promptLower.includes('search') || promptLower.includes('what') || promptLower.includes('who') || promptLower.includes('weather') || promptLower.includes('explain') || promptLower.includes('how')) {
-      responseObj.intent = 'WEB_SEARCH';
-      responseObj.speechReply = ollamaResponse || `Here is what I found regarding "${prompt}": ContextFlow AI processed this search query.`;
-      responseObj.actionCard = {
-        type: 'INFO_CARD',
-        title: '🔍 AI Web Insight',
-        subtitle: prompt.slice(0, 50),
-        buttonText: 'View Search Details',
-        actionData: { query: prompt }
-      };
-      responseObj.contextUsed = ['Web Engine', 'Ollama LLM'];
-    }
-    // Intent G: General Conversation / Chat with User
+    // 7. GENERAL CONVERSATION & Q&A (Natural Chat without forcing unnecessary action cards)
     else {
       responseObj.intent = 'CONVERSATIONAL_REPLY';
-      responseObj.speechReply = ollamaResponse || `I understand! "${prompt}". Is there anything specific you'd like me to action or set up for you?`;
-      responseObj.actionCard = {
-        type: 'CONVERSATION_SUGGESTION',
-        title: '💡 Suggested Action',
-        subtitle: `Execute smart task for "${prompt.slice(0, 30)}"`,
-        buttonText: 'Run Action Workflow',
-        actionData: { prompt }
-      };
-      responseObj.contextUsed = ['Ollama AI Reasoning'];
+      responseObj.speechReply = ollamaResponse || `I'm here! Tell me what you need, whether it's drafting a message, launching an app, setting alarms, or answering questions.`;
+      responseObj.actionCard = null; // Clean chat response without forcing unwanted cards!
+      responseObj.contextUsed = ['Ollama AI Engine'];
     }
 
     learningStore.logConversation(prompt, responseObj.speechReply);
@@ -225,7 +248,7 @@ Be helpful, concise, and natural.`;
 app.post('/api/feedback-learn', (req, res) => {
   try {
     const { actionType, title } = req.body;
-    const ruleText = `User preferred action: "${title || actionType}"`;
+    const ruleText = `User confirmed action: "${title || actionType}"`;
     const newRule = learningStore.addLearnedRule(ruleText, actionType || 'User Choice');
 
     res.json({
@@ -249,10 +272,10 @@ app.get('/api/learning-rules', (req, res) => {
   });
 });
 
-// Bind to 0.0.0.0 so external Wi-Fi devices (e.g. mobile phones on Expo Go) can connect!
+// Bind to 0.0.0.0 for LAN Wi-Fi access
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`====================================================`);
-  console.log(`🚀 ContextFlow Actionable AI Agent Server Running`);
+  console.log(`🚀 ContextFlow Universal Action Agent Running`);
   console.log(`🌐 Server Port: ${PORT} (Bound to 0.0.0.0 for LAN/Wi-Fi)`);
   console.log(`🤖 Ollama Model Target: ${OLLAMA_MODEL} (${OLLAMA_URL})`);
   console.log(`📡 Local Health Check: http://127.0.0.1:${PORT}/api/health`);
