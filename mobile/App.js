@@ -14,6 +14,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { Ionicons, Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import {
   checkServerHealth,
   processLifeAssistant,
@@ -79,7 +80,6 @@ export default function App() {
     const text = textToSend.trim();
     if (!text) return;
 
-    // 1. Add User message to chat feed
     const userMsg = {
       id: `usr_${Date.now()}`,
       sender: 'user',
@@ -91,10 +91,8 @@ export default function App() {
     setInputText('');
     setLoading(true);
 
-    // Scroll to bottom
     setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
 
-    // 2. Query AI Agent
     const res = await processLifeAssistant(text, contextData);
     setLoading(false);
 
@@ -117,10 +115,8 @@ export default function App() {
   const handleExecuteAction = async (msgId, actionCard) => {
     if (!actionCard) return;
 
-    // Execute real native client action
     const execution = await executeAgentAction(actionCard);
 
-    // Update message state with confirmation badge
     setMessages((prev) =>
       prev.map((m) =>
         m.id === msgId
@@ -133,7 +129,6 @@ export default function App() {
       )
     );
 
-    // Submit learning feedback
     const feedback = await submitLearningFeedback(actionCard.type, actionCard.title);
     if (feedback && feedback.learnedRule) {
       setToastNotice(feedback.learnedRule.rule || 'Preference saved to AI memory!');
@@ -144,12 +139,29 @@ export default function App() {
     }
   };
 
+  const renderActionCardIcon = (type) => {
+    switch (type) {
+      case 'MESSAGE_DRAFT':
+        return <Ionicons name="chatbubbles-outline" size={18} color="#25D366" />;
+      case 'MEDIA_PLAYER':
+        return <Ionicons name="musical-notes-outline" size={18} color="#1DB954" />;
+      case 'RIDE_BOOKING':
+        return <Ionicons name="car-outline" size={18} color="#f59e0b" />;
+      case 'SYSTEM_LAUNCH':
+        return <Ionicons name="rocket-outline" size={18} color="#38bdf8" />;
+      case 'REMINDER_CARD':
+        return <Ionicons name="alarm-outline" size={18} color="#ef4444" />;
+      default:
+        return <Ionicons name="flash-outline" size={18} color="#6366f1" />;
+    }
+  };
+
   const quickActionDock = [
-    { label: '🚕 Book Ride', prompt: 'I need a ride, book cab' },
-    { label: '🎵 Play Music', prompt: 'Play focus music on Spotify' },
-    { label: '📅 My Schedule', prompt: 'What is on my schedule today?' },
-    { label: '💬 Text Contact', prompt: 'Draft a message to Rahul' },
-    { label: '⏰ Set Alarm', prompt: 'Set an alarm for 7 AM' },
+    { label: 'Book Ride', icon: 'car-outline', color: '#f59e0b', prompt: 'I need a ride, book cab' },
+    { label: 'Play Music', icon: 'musical-notes-outline', color: '#1DB954', prompt: 'Play focus music on Spotify' },
+    { label: 'My Schedule', icon: 'calendar-outline', color: '#38bdf8', prompt: 'What is on my schedule today?' },
+    { label: 'Text Contact', icon: 'chatbubble-ellipses-outline', color: '#6366f1', prompt: 'Draft a message to Rahul' },
+    { label: 'Set Alarm', icon: 'alarm-outline', color: '#ef4444', prompt: 'Set an alarm for 7 AM' },
   ];
 
   return (
@@ -158,13 +170,15 @@ export default function App() {
 
       {/* Top Navigation Bar */}
       <View style={styles.topBar}>
-        <View>
-          <Text style={styles.brandTitle}>ContextFlow</Text>
-          <Text style={styles.brandSub}>Actionable AI Assistant</Text>
+        <View style={styles.brandRow}>
+          <Ionicons name="sparkles" size={20} color="#6366f1" style={{ marginRight: 8 }} />
+          <View>
+            <Text style={styles.brandTitle}>ContextFlow</Text>
+            <Text style={styles.brandSub}>Actionable AI Assistant</Text>
+          </View>
         </View>
 
         <View style={styles.topRightControls}>
-          {/* Status Badge */}
           <TouchableOpacity
             style={[styles.statusBadge, serverOnline ? styles.statusBadgeOnline : styles.statusBadgeOffline]}
             onPress={() => setShowSettingsModal(true)}
@@ -175,9 +189,8 @@ export default function App() {
             </Text>
           </TouchableOpacity>
 
-          {/* Settings Button */}
           <TouchableOpacity style={styles.iconBtn} onPress={() => setShowSettingsModal(true)}>
-            <Text style={styles.iconBtnText}>⚙️</Text>
+            <Ionicons name="settings-outline" size={18} color="#cbd5e1" />
           </TouchableOpacity>
         </View>
       </View>
@@ -186,16 +199,20 @@ export default function App() {
       <View style={styles.contextBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.contextBarScroll}>
           <TouchableOpacity style={styles.contextChip} onPress={() => setShowMemoryModal(true)}>
-            <Text style={styles.contextChipText}>🧠 Memory: {learnedRules.length} Rules</Text>
+            <Ionicons name="hardware-chip-outline" size={13} color="#a855f7" style={{ marginRight: 5 }} />
+            <Text style={styles.contextChipText}>Memory: {learnedRules.length} Rules</Text>
           </TouchableOpacity>
           <View style={styles.contextChip}>
-            <Text style={styles.contextChipText}>📍 {contextData.location.slice(0, 18)}...</Text>
+            <Ionicons name="location-outline" size={13} color="#38bdf8" style={{ marginRight: 5 }} />
+            <Text style={styles.contextChipText}>{contextData.location.slice(0, 18)}...</Text>
           </View>
           <View style={styles.contextChip}>
-            <Text style={styles.contextChipText}>📅 Next: {contextData.calendar.event}</Text>
+            <Ionicons name="calendar-outline" size={13} color="#38bdf8" style={{ marginRight: 5 }} />
+            <Text style={styles.contextChipText}>Next: {contextData.calendar.event}</Text>
           </View>
           <View style={styles.contextChip}>
-            <Text style={styles.contextChipText}>🤖 {ollamaStatus}</Text>
+            <Ionicons name="server-outline" size={13} color="#6366f1" style={{ marginRight: 5 }} />
+            <Text style={styles.contextChipText}>{ollamaStatus}</Text>
           </View>
         </ScrollView>
       </View>
@@ -203,8 +220,11 @@ export default function App() {
       {/* Floating Learning Toast Notice */}
       {toastNotice && (
         <View style={styles.toastCard}>
-          <Text style={styles.toastTitle}>✨ Preference Learned</Text>
-          <Text style={styles.toastText}>{toastNotice}</Text>
+          <Ionicons name="sparkles" size={16} color="#ffffff" style={{ marginRight: 8 }} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.toastTitle}>Preference Learned</Text>
+            <Text style={styles.toastText}>{toastNotice}</Text>
+          </View>
         </View>
       )}
 
@@ -226,10 +246,9 @@ export default function App() {
                 msg.sender === 'user' ? styles.userRow : styles.assistantRow,
               ]}
             >
-              {/* Avatar Icon */}
               {msg.sender === 'assistant' && (
                 <View style={styles.aiAvatar}>
-                  <Text style={styles.aiAvatarText}>⚡</Text>
+                  <Ionicons name="sparkles-sharp" size={14} color="#ffffff" />
                 </View>
               )}
 
@@ -239,7 +258,6 @@ export default function App() {
                   msg.sender === 'user' ? styles.userBubble : styles.assistantBubble,
                 ]}
               >
-                {/* Speech Reply */}
                 <Text style={styles.bubbleText}>{msg.text}</Text>
                 <Text style={styles.timestampText}>{msg.timestamp}</Text>
 
@@ -247,7 +265,12 @@ export default function App() {
                 {msg.actionCard && (
                   <View style={styles.actionCardContainer}>
                     <View style={styles.actionCardHeader}>
-                      <Text style={styles.actionCardTitle}>{msg.actionCard.title}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        {renderActionCardIcon(msg.actionCard.type)}
+                        <Text style={[styles.actionCardTitle, { marginLeft: 8 }]}>
+                          {msg.actionCard.title}
+                        </Text>
+                      </View>
                       {msg.actionCard.price && (
                         <Text style={styles.actionCardPrice}>{msg.actionCard.price}</Text>
                       )}
@@ -262,15 +285,19 @@ export default function App() {
                         style={styles.executeButton}
                         onPress={() => handleExecuteAction(msg.id, msg.actionCard)}
                       >
+                        <Ionicons name="play" size={14} color="#ffffff" style={{ marginRight: 6 }} />
                         <Text style={styles.executeButtonText}>
-                          ▶ {msg.actionCard.buttonText || 'Execute Action'}
+                          {msg.actionCard.buttonText || 'Execute Action'}
                         </Text>
                       </TouchableOpacity>
                     ) : (
                       <View style={styles.executedBanner}>
-                        <Text style={styles.executedBannerText}>
-                          ✓ {msg.executionDetails?.title || 'Action Completed'}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Ionicons name="checkmark-circle" size={14} color="#10b981" style={{ marginRight: 6 }} />
+                          <Text style={styles.executedBannerText}>
+                            {msg.executionDetails?.title || 'Action Completed'}
+                          </Text>
+                        </View>
                         <Text style={styles.executedSubtext}>
                           {msg.executionDetails?.message}
                         </Text>
@@ -303,6 +330,7 @@ export default function App() {
                 style={styles.dockChip}
                 onPress={() => handleSendMessage(item.prompt)}
               >
+                <Ionicons name={item.icon} size={14} color={item.color} style={{ marginRight: 6 }} />
                 <Text style={styles.dockChipText}>{item.label}</Text>
               </TouchableOpacity>
             ))}
@@ -320,7 +348,7 @@ export default function App() {
               }
             }}
           >
-            <Text style={styles.micBtnIcon}>{isRecording ? '⏹' : '🎙️'}</Text>
+            <Ionicons name={isRecording ? 'square' : 'mic'} size={20} color="#ffffff" />
           </TouchableOpacity>
 
           <TextInput
@@ -337,7 +365,7 @@ export default function App() {
             onPress={() => handleSendMessage()}
             disabled={loading}
           >
-            <Text style={styles.sendBtnIcon}>➔</Text>
+            <Ionicons name="send" size={16} color="#ffffff" />
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
@@ -346,7 +374,10 @@ export default function App() {
       <Modal visible={showSettingsModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>⚙️ Backend Server Host IP</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+              <Ionicons name="settings" size={20} color="#6366f1" style={{ marginRight: 8 }} />
+              <Text style={styles.modalTitle}>Backend Server Host IP</Text>
+            </View>
             <Text style={styles.modalDescription}>
               Enter your PC's local Wi-Fi IP address so your phone can communicate with the Node server over Wi-Fi:
             </Text>
@@ -384,9 +415,12 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <View style={styles.modalHeaderBetween}>
-              <Text style={styles.modalTitle}>🧠 Learned AI Memory</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Ionicons name="hardware-chip" size={20} color="#a855f7" style={{ marginRight: 8 }} />
+                <Text style={styles.modalTitle}>Learned AI Memory</Text>
+              </View>
               <TouchableOpacity onPress={() => setShowMemoryModal(false)}>
-                <Text style={styles.closeText}>✕ Close</Text>
+                <Ionicons name="close" size={22} color="#ef4444" />
               </TouchableOpacity>
             </View>
             <ScrollView style={styles.rulesList}>
@@ -419,8 +453,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
   },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   brandTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     color: '#6366f1',
     letterSpacing: 0.5,
@@ -465,12 +503,9 @@ const styles = StyleSheet.create({
     color: '#f8fafc',
   },
   iconBtn: {
-    padding: 6,
+    padding: 8,
     backgroundColor: '#1e293b',
     borderRadius: 10,
-  },
-  iconBtnText: {
-    fontSize: 14,
   },
   contextBar: {
     backgroundColor: '#0f172a',
@@ -483,9 +518,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   contextChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#1e293b',
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#334155',
@@ -496,6 +533,8 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   toastCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: 'rgba(99, 102, 241, 0.95)',
     marginHorizontal: 16,
     marginTop: 8,
@@ -532,18 +571,14 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
   },
   aiAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: '#6366f1',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 10,
     marginTop: 2,
-  },
-  aiAvatarText: {
-    fontSize: 16,
-    color: '#ffffff',
   },
   bubble: {
     maxWidth: '80%',
@@ -608,11 +643,13 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   executeButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginTop: 10,
     backgroundColor: '#10b981',
     paddingVertical: 10,
     borderRadius: 8,
-    alignItems: 'center',
   },
   executeButtonText: {
     color: '#ffffff',
@@ -646,6 +683,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   dockChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#131b2e',
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -679,9 +718,6 @@ const styles = StyleSheet.create({
   micBtnActive: {
     backgroundColor: '#ef4444',
   },
-  micBtnIcon: {
-    fontSize: 20,
-  },
   chatInput: {
     flex: 1,
     backgroundColor: '#131b2e',
@@ -701,11 +737,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  sendBtnIcon: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: '700',
-  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.85)',
@@ -723,7 +754,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#f8fafc',
-    marginBottom: 8,
   },
   modalDescription: {
     fontSize: 12,
@@ -777,11 +807,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
-  },
-  closeText: {
-    color: '#ef4444',
-    fontWeight: '700',
-    fontSize: 13,
   },
   rulesList: {
     maxHeight: 280,
